@@ -267,7 +267,10 @@ static const VirtIOPCIIDInfo virtio_pci_id_info[] = {
         .vdev_id = VIRTIO_ID_RNG,
         .trans_devid = PCI_DEVICE_ID_VIRTIO_RNG,
         .class_id = PCI_CLASS_OTHERS,
-    },
+    }, {
+        .vdev_id = VIRTIO_ID_COMP,
+        .class_id = PCI_CLASS_OTHERS,
+    }
 };
 
 static const VirtIOPCIIDInfo *virtio_pci_get_id_info(uint16_t vdev_id)

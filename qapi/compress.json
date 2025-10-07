@@ -1,0 +1,21 @@
+# -*- Mode: Python -*-
+# vim: filetype=python
+#
+
+##
+# ************
+# Cryptography
+# ************
+##
+
+##
+# @QCompressAlgo:
+#
+# 
+#
+# @deflate: deflate
+#
+# Since: 7.1
+##
+{ 'enum': 'QCompressAlgo',
+  'data': ['deflate']}

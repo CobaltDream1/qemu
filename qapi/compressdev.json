@@ -1,0 +1,97 @@
+# -*- Mode: Python -*-
+# vim: filetype=python
+#
+# This work is licensed under the terms of the GNU GPL, version 2 or later.
+# See the COPYING file in the top-level directory.
+
+##
+# ********************
+# Compressgraphy devices
+# ********************
+##
+
+##
+# @QCompressdevBackendAlgoType:
+#
+# The supported algorithm types of a compress device.
+#
+# @stateless: stateless
+#
+# @stateful: stateful
+#
+# Since: 8.0
+##
+{ 'enum': 'QCompressdevBackendAlgoType',
+  'data': ['stateless', 'stateful']}
+
+##
+# @QCompressdevBackendServiceType:
+#
+# The supported service types of a compress device.
+#
+# @stateless: stateless
+#
+# @stateful: stateful
+#
+# Since: 8.0
+##
+{ 'enum': 'QCompressdevBackendServiceType',
+  'data': ['stateless', 'stateful']}
+
+##
+# @QCompressdevBackendType:
+#
+# The compress device backend type
+#
+# @builtin: the QEMU builtin support
+#
+# @vhost-user: vhost-user
+#
+# @lkcf: Linux kernel compressgraphic framework
+#
+# Since: 8.0
+##
+{ 'enum': 'QCompressdevBackendType',
+  'data': ['builtin', 'vhost-user', 'lkcf']}
+
+##
+# @QCompressdevBackendClient:
+#
+# Information about a queue of compress device.
+#
+# @queue: the queue index of the compress device
+#
+# @type: the type of the compress device
+#
+# Since: 8.0
+##
+{ 'struct': 'QCompressdevBackendClient',
+  'data': { 'queue': 'uint32',
+            'type': 'QCompressdevBackendType' } }
+
+##
+# @QCompressdevInfo:
+#
+# Information about a compress device.
+#
+# @id: the id of the compress device
+#
+# @service: supported service types of a compress device
+#
+# @client: the additional information of the compress device
+#
+# Since: 8.0
+##
+{ 'struct': 'QCompressdevInfo',
+  'data': { 'id': 'str',
+            'service': ['QCompressdevBackendServiceType'],
+            'client': ['QCompressdevBackendClient'] } }
+
+##
+# @query-compressdev:
+#
+# Return information about current compress devices.
+#
+# Since: 8.0
+##
+{ 'command': 'query-compressdev', 'returns': ['QCompressdevInfo']}

@@ -206,6 +206,7 @@ meson_options_help() {
   printf "%s\n" '  vfio-user-server'
   printf "%s\n" '                  vfio-user server support'
   printf "%s\n" '  vhdx            vhdx image format support'
+  printf "%s\n" '  vhost-comp      vhost-user comp backend support'
   printf "%s\n" '  vhost-crypto    vhost-user crypto backend support'
   printf "%s\n" '  vhost-kernel    vhost kernel backend support'
   printf "%s\n" '  vhost-net       vhost-net kernel acceleration support'
@@ -539,6 +540,8 @@ _meson_option_parse() {
     --disable-vfio-user-server) printf "%s" -Dvfio_user_server=disabled ;;
     --enable-vhdx) printf "%s" -Dvhdx=enabled ;;
     --disable-vhdx) printf "%s" -Dvhdx=disabled ;;
+    --enable-vhost-comp) printf "%s" -Dvhost_comp=enabled ;;
+    --disable-vhost-comp) printf "%s" -Dvhost_comp=disabled ;;
     --enable-vhost-crypto) printf "%s" -Dvhost_crypto=enabled ;;
     --disable-vhost-crypto) printf "%s" -Dvhost_crypto=disabled ;;
     --enable-vhost-kernel) printf "%s" -Dvhost_kernel=enabled ;;

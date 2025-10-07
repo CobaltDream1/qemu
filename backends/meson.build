@@ -2,6 +2,7 @@ system_ss.add([files(
   'cryptodev-builtin.c',
   'cryptodev-hmp-cmds.c',
   'cryptodev.c',
+  'compressdev.c',
   'hostmem-ram.c',
   'hostmem.c',
   'rng-builtin.c',
@@ -28,9 +29,13 @@ if have_vhost_user
   system_ss.add(when: 'CONFIG_VIRTIO', if_true: files('vhost-user.c'))
 endif
 system_ss.add(when: 'CONFIG_VIRTIO_CRYPTO', if_true: files('cryptodev-vhost.c'))
+system_ss.add(when: 'CONFIG_VIRTIO_COMP', if_true: files('compressdev-vhost.c'))
 system_ss.add(when: 'CONFIG_IOMMUFD', if_true: files('iommufd.c'))
 if have_vhost_user_crypto
   system_ss.add(when: 'CONFIG_VIRTIO_CRYPTO', if_true: files('cryptodev-vhost-user.c'))
+endif
+if have_vhost_user_comp
+  system_ss.add(when: 'CONFIG_VIRTIO_COMP', if_true: files('compressdev-vhost-user.c'))
 endif
 system_ss.add(when: gio, if_true: files('dbus-vmstate.c'))
 system_ss.add(when: 'CONFIG_SGX', if_true: files('hostmem-epc.c'))

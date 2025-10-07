@@ -127,6 +127,9 @@ static const qmp_virtio_feature_map_t vhost_user_protocol_map[] = {
     FEATURE_ENTRY(VHOST_USER_PROTOCOL_F_DEVICE_STATE, \
             "VHOST_USER_PROTOCOL_F_DEVICE_STATE: Backend device state transfer "
             "supported"),
+    FEATURE_ENTRY(VHOST_USER_PROTOCOL_F_COMPRESS_SESSION, \
+            "VHOST_USER_PROTOCOL_F_COMPRESS_SESSION: Session creation for compress "
+            "operations supported"),
     { -1, "" }
 };
 
@@ -421,6 +424,15 @@ static const qmp_virtio_feature_map_t virtio_crypto_feature_map[] = {
 };
 #endif
 
+/* virtio-comp features mapping */
+#ifdef CONFIG_VIRTIO_COMP
+static const qmp_virtio_feature_map_t virtio_comp_feature_map[] = {
+    FEATURE_ENTRY(VHOST_F_LOG_ALL, \
+            "VHOST_F_LOG_ALL: Logging write descriptors supported"),
+    { -1, "" }
+};
+#endif
+
 /* virtio-iommu features mapping */
 #ifdef CONFIG_VIRTIO_IOMMU
 static const qmp_virtio_feature_map_t virtio_iommu_feature_map[] = {
@@ -624,6 +636,12 @@ VirtioDeviceFeatures *qmp_decode_features(uint16_t device_id, uint64_t bitmap)
     case VIRTIO_ID_CRYPTO:
         features->dev_features =
             CONVERT_FEATURES(strList, virtio_crypto_feature_map, 0, bitmap);
+        break;
+#endif
+#ifdef CONFIG_VIRTIO_COMP
+    case VIRTIO_ID_COMP:
+        features->dev_features =
+            CONVERT_FEATURES(strList, virtio_comp_feature_map, 0, bitmap);
         break;
 #endif
 #ifdef CONFIG_VIRTIO_MEM

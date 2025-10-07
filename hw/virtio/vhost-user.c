@@ -19,6 +19,8 @@
 #include "hw/virtio/virtio-net.h"
 #include "chardev/char-fe.h"
 #include "io/channel-socket.h"
+#include "standard-headers/linux/virtio_comp.h"
+#include "system/compressdev.h"
 #include "system/kvm.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
@@ -104,6 +106,8 @@ typedef enum VhostUserRequest {
     VHOST_USER_GET_SHARED_OBJECT = 41,
     VHOST_USER_SET_DEVICE_STATE_FD = 42,
     VHOST_USER_CHECK_DEVICE_STATE = 43,
+    VHOST_USER_CREATE_COMPRESS_SESSION = 26,
+    VHOST_USER_CLOSE_COMPRESS_SESSION = 27,
     VHOST_USER_MAX
 } VhostUserRequest;
 
@@ -170,6 +174,17 @@ typedef struct VhostUserCryptoSession {
     int64_t session_id;
 } VhostUserCryptoSession;
 
+typedef struct VhostUserCompressSession {
+    uint64_t op_code;
+    union {
+        CompressDevBackendStatefulSessionInfo stateful_session_setup_data;
+        CompressDevBackendStatelessSessionInfo stateless_session_setup_data;
+    } u;
+
+    /* session id for success, -1 on errors */
+    int64_t session_id;
+} VhostUserCompressSession;
+
 static VhostUserConfig c __attribute__ ((unused));
 #define VHOST_USER_CONFIG_HDR_SIZE (sizeof(c.offset) \
                                    + sizeof(c.size) \
@@ -220,6 +235,7 @@ typedef union {
         struct vhost_iotlb_msg iotlb;
         VhostUserConfig config;
         VhostUserCryptoSession session;
+        VhostUserCompressSession compress_session;
         VhostUserVringArea area;
         VhostUserInflight inflight;
         VhostUserShared object;
@@ -2657,6 +2673,105 @@ vhost_user_crypto_close_session(struct vhost_dev *dev, uint64_t session_id)
     return 0;
 }
 
+
+static int vhost_user_compress_create_session(struct vhost_dev *dev,
+                                            void *session_info,
+                                            uint64_t *session_id)
+{
+    int ret;
+    bool compress_session = virtio_has_feature(dev->protocol_features,
+                                       VHOST_USER_PROTOCOL_F_COMPRESS_SESSION);
+    CompressDevBackendSessionInfo *backend_info = session_info;
+    VhostUserMsg msg = {
+        .hdr.request = VHOST_USER_CREATE_COMPRESS_SESSION,
+        .hdr.flags = VHOST_USER_VERSION,
+        .hdr.size = sizeof(msg.payload.session),
+    };
+
+    assert(dev->vhost_ops->backend_type == VHOST_BACKEND_TYPE_USER);
+
+    if (!compress_session) {
+        error_report("vhost-user trying to send unhandled ioctl");
+        return -ENOTSUP;
+    }
+
+    if (backend_info->op_code == VIRTIO_COMP_STATELESS_CREATE_SESSION) {
+        CompressDevBackendStatelessSessionInfo *sess = &backend_info->u.stateless_sess_info;
+
+        memcpy(&msg.payload.compress_session.u.stateless_session_setup_data, sess,
+               sizeof(CompressDevBackendStatelessSessionInfo));
+    } else {
+        CompressDevBackendStatefulSessionInfo *sess = &backend_info->u.stateful_sess_info;
+
+        memcpy(&msg.payload.compress_session.u.stateful_session_setup_data, sess,
+               sizeof(CryptoDevBackendSymSessionInfo));
+    }
+
+    msg.payload.session.op_code = backend_info->op_code;
+    msg.payload.session.session_id = backend_info->session_id;
+    ret = vhost_user_write(dev, &msg, NULL, 0);
+    if (ret < 0) {
+        error_report("vhost_user_write() return %d, create session failed",
+                     ret);
+        return ret;
+    }
+
+    ret = vhost_user_read(dev, &msg);
+    if (ret < 0) {
+        error_report("vhost_user_read() return %d, create session failed",
+                     ret);
+        return ret;
+    }
+
+    if (msg.hdr.request != VHOST_USER_CREATE_COMPRESS_SESSION) {
+        error_report("Received unexpected msg type. Expected %d received %d",
+                     VHOST_USER_CREATE_COMPRESS_SESSION, msg.hdr.request);
+        return -EPROTO;
+    }
+
+    if (msg.hdr.size != sizeof(msg.payload.session)) {
+        error_report("Received bad msg size.");
+        return -EPROTO;
+    }
+
+    if (msg.payload.session.session_id < 0) {
+        error_report("Bad session id: %" PRId64 "",
+                              msg.payload.session.session_id);
+        return -EINVAL;
+    }
+    *session_id = msg.payload.session.session_id;
+
+    return 0;
+}
+
+static int
+vhost_user_compress_close_session(struct vhost_dev *dev, uint64_t session_id)
+{
+    int ret;
+    bool compress_session = virtio_has_feature(dev->protocol_features,
+                                       VHOST_USER_PROTOCOL_F_COMPRESS_SESSION);
+    VhostUserMsg msg = {
+        .hdr.request = VHOST_USER_CLOSE_COMPRESS_SESSION,
+        .hdr.flags = VHOST_USER_VERSION,
+        .hdr.size = sizeof(msg.payload.u64),
+    };
+    msg.payload.u64 = session_id;
+
+    if (!compress_session) {
+        error_report("vhost-user trying to send unhandled ioctl");
+        return -ENOTSUP;
+    }
+
+    ret = vhost_user_write(dev, &msg, NULL, 0);
+    if (ret < 0) {
+        error_report("vhost_user_write() return %d, close session failed",
+                     ret);
+        return ret;
+    }
+
+    return 0;
+}
+
 static bool vhost_user_no_private_memslots(struct vhost_dev *dev)
 {
     return true;
@@ -3044,6 +3159,8 @@ const VhostOps user_ops = {
         .vhost_set_config = vhost_user_set_config,
         .vhost_crypto_create_session = vhost_user_crypto_create_session,
         .vhost_crypto_close_session = vhost_user_crypto_close_session,
+        .vhost_compress_create_session = vhost_user_compress_create_session,
+        .vhost_compress_close_session = vhost_user_compress_close_session,
         .vhost_get_inflight_fd = vhost_user_get_inflight_fd,
         .vhost_set_inflight_fd = vhost_user_set_inflight_fd,
         .vhost_dev_start = vhost_user_dev_start,

@@ -63,10 +63,12 @@
 #
 # @cryptodev: since 8.0
 #
+# @compressdev: test
+#
 # Since: 7.1
 ##
 { 'enum': 'StatsProvider',
-  'data': [ 'kvm', 'cryptodev' ] }
+  'data': [ 'kvm', 'cryptodev', 'compressdev' ] }
 
 ##
 # @StatsTarget:
@@ -80,10 +82,12 @@
 #
 # @cryptodev: statistics that apply to a crypto device (since 8.0)
 #
+# @compressdev: test
+#
 # Since: 7.1
 ##
 { 'enum': 'StatsTarget',
-  'data': [ 'vm', 'vcpu', 'cryptodev' ] }
+  'data': [ 'vm', 'vcpu', 'cryptodev', 'compressdev' ] }
 
 ##
 # @StatsRequest:
