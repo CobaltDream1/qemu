@@ -65,6 +65,7 @@ compressdev_vhost_start_one(CompressDevBackendVhost *compress,
     compress->dev.vqs = compress->vqs;
 
     r = vhost_dev_enable_notifiers(&compress->dev, dev);
+    warn_report("cryptodev vhost start one %d", r);
     if (r < 0) {
         goto fail_notifiers;
     }

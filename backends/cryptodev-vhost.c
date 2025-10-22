@@ -87,6 +87,7 @@ cryptodev_vhost_start_one(CryptoDevBackendVhost *crypto,
 
     crypto->dev.nvqs = 1;
     crypto->dev.vqs = crypto->vqs;
+    warn_report("cryptodev vhost start one");
 
     r = vhost_dev_enable_notifiers(&crypto->dev, dev);
     if (r < 0) {

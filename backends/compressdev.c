@@ -165,10 +165,9 @@ static int compressdev_backend_account(CompressDevBackend *backend,
         CompressDevBackendStatelessOpInfo *stateless_op_info = op_info->u.stateless_op_info;
         len = stateless_op_info->src_len;
 
-        if (unlikely(!backend->stateless_stat)) {
-            error_report("compressdev: Unexpected asym operation");
-            return -VIRTIO_COMP_NOTSUPP;
-        }
+        // if (unlikely(!backend->stateless_stat)) {
+        //     return -VIRTIO_COMP_NOTSUPP;
+        // }
         switch (op_info->op_code) {
         case VIRTIO_COMP_STATELESS_COMPRESS:
             CompressdevStatelessStatIncCompress(backend, len);

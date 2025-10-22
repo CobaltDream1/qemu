@@ -344,6 +344,27 @@
             '*throttle-ops': 'uint64' } }
 
 ##
+# @CompressdevBackendProperties:
+#
+# Properties for compressdev-backend and compressdev-backend-builtin
+# objects.
+#
+# @queues: the number of queues for the compressdev backend.  Ignored
+#     for compressdev-backend and must be 1 for
+#     compressdev-backend-builtin.  (default: 1)
+#
+# @throttle-bps: limit total bytes per second (Since 8.0)
+#
+# @throttle-ops: limit total operations per second (Since 8.0)
+#
+# Since: 2.8
+##
+{ 'struct': 'CompressdevBackendProperties',
+  'data': { '*queues': 'uint32',
+            '*throttle-bps': 'uint64',
+            '*throttle-ops': 'uint64' } }
+
+##
 # @CryptodevVhostUserProperties:
 #
 # Properties for cryptodev-vhost-user objects.
@@ -357,6 +378,22 @@
   'base': 'CryptodevBackendProperties',
   'data': { 'chardev': 'str' },
   'if': 'CONFIG_VHOST_CRYPTO' }
+
+
+##
+# @CompressdevVhostUserProperties:
+#
+# Properties for compressdev-vhost-user objects.
+#
+# @chardev: the name of a Unix domain socket character device that
+#     connects to the vhost-user server
+#
+# Since: 2.12
+##
+{ 'struct': 'CompressdevVhostUserProperties',
+  'base': 'CompressdevBackendProperties',
+  'data': { 'chardev': 'str' },
+  'if': 'CONFIG_VHOST_COMP' }
 
 ##
 # @DBusVMStateProperties:
@@ -1195,8 +1232,13 @@
     'cryptodev-backend',
     'cryptodev-backend-builtin',
     'cryptodev-backend-lkcf',
+    'compressdev-backend',
+    'compressdev-backend-builtin',
+    'compressdev-backend-lkcf',
     { 'name': 'cryptodev-vhost-user',
       'if': 'CONFIG_VHOST_CRYPTO' },
+    { 'name': 'compressdev-vhost-user',
+      'if': 'CONFIG_VHOST_COMP' },
     'dbus-vmstate',
     'filter-buffer',
     'filter-dump',
@@ -1273,8 +1315,13 @@
       'cryptodev-backend':          'CryptodevBackendProperties',
       'cryptodev-backend-builtin':  'CryptodevBackendProperties',
       'cryptodev-backend-lkcf':     'CryptodevBackendProperties',
+      'compressdev-backend':          'CompressdevBackendProperties',
+      'compressdev-backend-builtin':  'CompressdevBackendProperties',
+      'compressdev-backend-lkcf':     'CompressdevBackendProperties',
       'cryptodev-vhost-user':       { 'type': 'CryptodevVhostUserProperties',
                                       'if': 'CONFIG_VHOST_CRYPTO' },
+      'compressdev-vhost-user':       { 'type': 'CompressdevVhostUserProperties',
+                                      'if': 'CONFIG_VHOST_COMP' },
       'dbus-vmstate':               'DBusVMStateProperties',
       'filter-buffer':              'FilterBufferProperties',
       'filter-dump':                'FilterDumpProperties',

@@ -2962,6 +2962,8 @@ void vhost_user_async_close(DeviceState *d,
 
 static int vhost_user_dev_start(struct vhost_dev *dev, bool started)
 {
+    warn_report("%s %d", __FUNCTION__, __LINE__);
+
     if (!virtio_has_feature(dev->protocol_features,
                             VHOST_USER_PROTOCOL_F_STATUS)) {
         return 0;

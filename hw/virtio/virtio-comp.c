@@ -752,6 +752,7 @@ static void virtio_comp_device_realize(DeviceState *dev, Error **errp)
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOCompress *vcompress = VIRTIO_COMP(dev);
     int i;
+    warn_report( "crypto device realize\n");
 
     vcompress->compressdev = vcompress->conf.compressdev;
     if (vcompress->compressdev == NULL) {
@@ -853,6 +854,7 @@ static void virtio_comp_get_config(VirtIODevice *vdev, uint8_t *config)
 static bool virtio_comp_started(VirtIOCompress *c, uint8_t status)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(c);
+    warn_report("%s %d: %u %u %u", __FUNCTION__, __LINE__, status, c->status, vdev->vm_running);
     return (status & VIRTIO_CONFIG_S_DRIVER_OK) &&
         (c->status & VIRTIO_COMP_S_HW_READY) && vdev->vm_running;
 }
@@ -863,19 +865,23 @@ static void virtio_comp_vhost_status(VirtIOCompress *c, uint8_t status)
     int queues = c->multiqueue ? c->max_queues : 1;
     CompressDevBackend *b = c->compressdev;
     CompressDevBackendClient *cc = b->conf.peers.ccs[0];
+        warn_report("1%s, %d", __FUNCTION__, __LINE__);
 
     if (!compressdev_get_vhost(cc, b, 0)) {
         return;
     }
+        warn_report("2%s, %d", __FUNCTION__, __LINE__);
 
     if ((virtio_comp_started(c, status)) == !!c->vhost_started) {
         return;
     }
+        warn_report("3%s, %d", __FUNCTION__, __LINE__);
 
     if (!c->vhost_started) {
         int r;
 
         c->vhost_started = 1;
+        warn_report("4%s, %d", __FUNCTION__, __LINE__);
         r = compressdev_vhost_start(vdev, queues);
         if (r < 0) {
             error_report("unable to start vhost compress: %d: "
