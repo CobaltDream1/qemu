@@ -104,7 +104,11 @@ typedef enum VhostUserRequest {
     VHOST_USER_GET_SHARED_OBJECT = 41,
     VHOST_USER_SET_DEVICE_STATE_FD = 42,
     VHOST_USER_CHECK_DEVICE_STATE = 43,
-    VHOST_USER_GET_CRYPTO_STATE_FD = 44，
+    VHOST_USER_GET_CRYPTO_STATE_FD = 44,
+    VHOST_USER_CRYPTO_FREEZE = 45,
+    VHOST_USER_CRYPTO_SAVE   = 46,  /* with 1 FD (write end on src) */
+    VHOST_USER_CRYPTO_LOAD   = 47,  /* with 1 FD (read end on dst)  */
+    VHOST_USER_CRYPTO_THAW   = 48,
     VHOST_USER_MAX
 } VhostUserRequest;
 
@@ -2229,6 +2233,9 @@ static int vhost_user_backend_init(struct vhost_dev *dev, void *opaque,
 
         /* final set of protocol features */
         dev->protocol_features = protocol_features;
+        if (dev->vdev && virtio_get_device_id(dev->vdev) == VIRTIO_ID_CRYPTO) {
+            dev->protocol_features |= (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_MIGRATION);
+        }
         err = vhost_user_set_protocol_features(dev, dev->protocol_features);
         if (err < 0) {
             error_setg_errno(errp, EPROTO, "vhost_backend_init failed");

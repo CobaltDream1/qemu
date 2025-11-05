@@ -50,7 +50,140 @@ struct CryptoDevBackendVhostUser {
     char *chr_name;
     bool opened;
     CryptoDevBackendVhost *vhost_crypto[MAX_CRYPTO_QUEUE_NUM];
+
+        /* --- migration cache --- */
+    uint8_t  *mig_blob;
+    uint32_t  mig_blob_len;
+    uint64_t  mig_epoch;   /* 可选：从 TLV 解析出的世代/计数 */
 };
+
+#ifndef VC_SNAP_MAGIC
+/* ---- Minimal snapshot header (frontend-local) ---- */
+typedef struct QEMU_PACKED VC_SnapHdr {
+    uint32_t magic;       /* 'VCRY' -> 0x59524356 LE */
+    uint16_t version;     /* = 1 */
+    uint16_t hdr_len;     /* bytes, including this header */
+    uint32_t payload_len; /* TLV region length */
+    uint32_t crc32;       /* CRC over TLV region (optional verify) */
+} VC_SnapHdr;
+
+#define VC_SNAP_MAGIC 0x59524356u
+#endif
+
+/* 无 FD */
+static int vuc_send_simple(VhostUserState *vu, uint32_t req) {
+    VhostUserMsg msg = { .hdr.request = req,
+                         .hdr.flags = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK };
+    int ret = vhost_user_write(vu, &msg, NULL, 0);
+    if (ret < 0) return ret;
+    return process_message_reply(vu, &msg);
+}
+
+/* 1 个 FD */
+static int vuc_send_with_fd(VhostUserState *vu, uint32_t req, int fd) {
+    VhostUserMsg msg = { .hdr.request = req,
+                         .hdr.flags = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK };
+    int fds[1] = { fd };
+    int ret = vhost_user_write(vu, &msg, fds, 1);
+    if (ret < 0) return ret;
+    return process_message_reply(vu, &msg);
+}
+
+
+/* 改名为带前缀版本 */
+static int vuc_read_full(int fd, void *buf, size_t count) {
+    uint8_t *p = buf;
+    size_t done = 0;
+    while (done < count) {
+        ssize_t n = read(fd, p + done, count - done);
+        if (n == 0) return -EPIPE;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -errno;
+        }
+        done += n;
+    }
+    return 0;
+}
+
+static int vuc_write_full(int fd, const void *buf, size_t count) {
+    const uint8_t *p = buf;
+    size_t done = 0;
+    while (done < count) {
+        ssize_t n = write(fd, p + done, count - done);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -errno;
+        }
+        done += n;
+    }
+    return 0;
+}
+
+static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
+                                         uint8_t **blob, uint32_t *len,
+                                         uint64_t *epoch)
+{
+    CryptoDevVhostUser *s = CRYPTODEV_VHOST_USER(backend);
+    int sv[2] = {-1, -1};
+    int r = -1;
+
+    *blob = NULL; *len = 0; *epoch = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+        return -errno;
+    }
+
+    /* 用你的封装发 SAVE_STATE，并附带 sv[1] */
+    r = vuc_send_with_fd(&s->vhost_user, VHOST_USER_CRYPTO_SAVE_STATE, sv[1]);
+    if (r < 0) { goto out; }
+
+    /* 读回后端写入 sv[0] 的 “快照头+payload” */
+    struct vc_snap_hdr hdr;
+    if (vuc_read_full(sv[0], &hdr, sizeof hdr) != sizeof hdr) { r = -EIO; goto out; }
+
+    uint32_t paylen = le32_to_cpu(hdr.payload_len);
+    if (!paylen || paylen > (64u<<20)) { r = -EINVAL; goto out; }
+
+    uint8_t *buf = g_malloc(paylen);
+    if (vuc_read_full(sv[0], buf, paylen) != (ssize_t)paylen) { g_free(buf); r = -EIO; goto out; }
+
+    if (qemu_crc32(buf, paylen) != le32_to_cpu(hdr.crc32)) { g_free(buf); r = -EBADMSG; goto out; }
+
+    *blob = buf; *len = paylen;  /* 所有权交给 VMState */
+    r = 0;
+
+out:
+    if (sv[0] >= 0) close(sv[0]);
+    if (sv[1] >= 0) close(sv[1]);
+    return r;
+}
+
+static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
+                                          const uint8_t *blob, uint32_t len,
+                                          uint64_t epoch)
+{
+    CryptoDevVhostUser *s = CRYPTODEV_VHOST_USER(backend);
+    int sv[2] = {-1, -1};
+    int r = -1;
+
+    if (!blob || !len) return -EINVAL;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) return -errno;
+
+    /* 发 LOAD_STATE，附带 sv[1] */
+    r = vuc_send_with_fd(&s->vhost_user, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
+    close(sv[1]); sv[1] = -1;
+    if (r < 0) { goto out; }
+
+    /* 把 VMState 的 blob 写给后端 */
+    if (vuc_write_full(sv[0], blob, len) != (ssize_t)len) { r = -EIO; goto out; }
+
+    r = 0;
+out:
+    if (sv[0] >= 0) close(sv[0]);
+    if (sv[1] >= 0) close(sv[1]);
+    return r;
+}
 
 static int
 cryptodev_vhost_user_running(
@@ -390,6 +523,7 @@ static void cryptodev_vhost_user_finalize(Object *obj)
     qemu_chr_fe_deinit(&s->chr, false);
 
     g_free(s->chr_name);
+    g_free(s->mig_blob); 
 }
 
 static void
@@ -401,6 +535,8 @@ cryptodev_vhost_user_class_init(ObjectClass *oc, const void *data)
     bc->cleanup = cryptodev_vhost_user_cleanup;
     bc->create_session = cryptodev_vhost_user_create_session;
     bc->close_session = cryptodev_vhost_user_close_session;
+    bc->pre_save = cryptodev_vhost_user_pre_save;   /* <— 新增 */
+    bc->post_load = cryptodev_vhost_user_post_load; /* <— 新增 */
     bc->do_op = NULL;
 
     object_class_property_add_str(oc, "chardev",

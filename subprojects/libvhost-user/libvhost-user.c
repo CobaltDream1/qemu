@@ -122,6 +122,104 @@ static inline bool vu_has_protocol_feature(VuDev *dev, unsigned int fbit)
     return has_feature(dev->protocol_features, fbit);
 }
 
+/* tiny io helpers */
+static int write_full(int fd, const void *buf, size_t len) {
+    const uint8_t *p = buf;
+    while (len) {
+        ssize_t n = write(fd, p, len);
+        if (n < 0) return -errno;
+        p += n; len -= n;
+    }
+    return 0;
+}
+
+static int read_full(int fd, void *buf, size_t len) {
+    uint8_t *p = buf;
+    while (len) {
+        ssize_t n = read(fd, p, len);
+        if (n <= 0) return n ? -errno : -EIO;
+        p += n; len -= n;
+    }
+    return 0;
+}
+
+/* versioned header for future-proofing */
+typedef struct CryptoStateHeader {
+    uint32_t magic;     /* 'VCST' -> 0x56535354 */
+    uint16_t version;   /* 1 */
+    uint16_t flags;     /* reserved */
+    uint32_t payload;   /* bytes of the state struct that follows */
+} __attribute__((packed)) CryptoStateHeader;
+
+/* minimal state v1: 放“可重建”的状态，先跑通链路 */
+typedef struct CryptoStateV1 {
+    uint32_t num_queues;
+    uint32_t active_sessions;
+} __attribute__((packed)) CryptoStateV1;
+
+/* 你项目里的后端私有结构，按实际替换：这里假设 dev->user_data 指向它
+typedef struct BackendPriv {
+    uint32_t num_queues;
+    uint32_t active_sessions;
+    // ... 其他字段，密钥材料不建议直接迁移
+} BackendPriv;
+*/
+
+static int vu_crypto_freeze(VuDev *dev, VhostUserMsg *vmsg) {
+    if (vmsg->fd_num) { vmsg_close_fds(vmsg); return -EINVAL; }
+    /* 停 worker、drain 队列、屏蔽通知（按你的后端私有 API 实现）
+       BackendPriv *p = dev->user_data;
+       backend_quiesce(p);
+    */
+    return 0;
+}
+
+static int vu_crypto_save(VuDev *dev, VhostUserMsg *vmsg) {
+    if (vmsg->fd_num != 1) { vmsg_close_fds(vmsg); return -EINVAL; }
+    int wfd = vmsg->fds[0];
+
+    CryptoStateV1 s = {
+        .num_queues      = /* 从后端取 */ 1,
+        .active_sessions = /* 从后端取 */ 0,
+    };
+    CryptoStateHeader h = { .magic=0x56535354, .version=1, .flags=0,
+                            .payload=sizeof(s) };
+
+    int ret = write_full(wfd, &h, sizeof(h));
+    if (!ret) ret = write_full(wfd, &s, sizeof(s));
+    close(wfd);
+    return ret;
+}
+
+static int vu_crypto_load(VuDev *dev, VhostUserMsg *vmsg) {
+    if (vmsg->fd_num != 1) { vmsg_close_fds(vmsg); return -EINVAL; }
+    int rfd = vmsg->fds[0];
+
+    CryptoStateHeader h; CryptoStateV1 s;
+    int ret = read_full(rfd, &h, sizeof(h));
+    if (ret) { close(rfd); return ret; }
+    if (h.magic != 0x56535354 || h.version != 1 || h.payload != sizeof(s)) {
+        close(rfd); return -EINVAL;
+    }
+    ret = read_full(rfd, &s, sizeof(s));
+    close(rfd);
+    if (ret) return ret;
+
+    /* 用 s 恢复“可重建”状态（会话表等敏感材料建议重协商） 
+       BackendPriv *p = dev->user_data;
+       backend_restore(p, &s);
+    */
+    return 0;
+}
+
+static int vu_crypto_thaw(VuDev *dev, VhostUserMsg *vmsg) {
+    if (vmsg->fd_num) { vmsg_close_fds(vmsg); return -EINVAL; }
+    /* 解除冻结：恢复通知/中断、拉起 worker */
+    // BackendPriv *p = dev->user_data;
+    // backend_resume(p);
+    return 0;
+}
+
 const char *
 vu_request_to_string(unsigned int req)
 {
@@ -165,6 +263,10 @@ vu_request_to_string(unsigned int req)
         REQ(VHOST_USER_REM_MEM_REG),
         REQ(VHOST_USER_GET_SHARED_OBJECT),
         REQ(VHOST_USER_MAX),
+        REQ(VHOST_USER_CRYPTO_FREEZE),
+        REQ(VHOST_USER_CRYPTO_SAVE),
+        REQ(VHOST_USER_CRYPTO_LOAD),
+        REQ(VHOST_USER_CRYPTO_THAW),
     };
 #undef REQ
 
@@ -1660,7 +1762,8 @@ vu_get_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
                         1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER |
                         1ULL << VHOST_USER_PROTOCOL_F_BACKEND_SEND_FD |
                         1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK |
-                        1ULL << VHOST_USER_PROTOCOL_F_CONFIGURE_MEM_SLOTS;
+                        1ULL << VHOST_USER_PROTOCOL_F_CONFIGURE_MEM_SLOTS |
+                        1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_MIGRATION; 
 
     if (have_userfault()) {
         features |= 1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT;
@@ -1689,6 +1792,36 @@ vu_get_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
     return true;
 }
 
+static uint64_t vu_supported_protocol_features(VuDev *dev)
+{
+    uint64_t f = 0;
+
+    /* 基础位，与 vu_get_protocol_features_exec() 保持一致 */
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_MQ;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_BACKEND_REQ;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_BACKEND_SEND_FD;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_CONFIGURE_MEM_SLOTS;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_MIGRATION;  /* 你的扩展 */
+
+    if (have_userfault()) {
+        f |= 1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT;
+    }
+    if (dev->iface->get_config && dev->iface->set_config) {
+        f |= 1ULL << VHOST_USER_PROTOCOL_F_CONFIG;
+    }
+    if (dev->iface->get_protocol_features) {
+        f |= dev->iface->get_protocol_features(dev);
+    }
+#ifndef MFD_ALLOW_SEALING
+    f &= ~(1ULL << VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD);
+#endif
+    return f;
+}
+
+
 static bool
 vu_set_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
@@ -1697,6 +1830,14 @@ vu_set_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
     DPRINT("u64: 0x%016"PRIx64"\n", features);
 
     dev->protocol_features = vmsg->payload.u64;
+
+/* ←—— 把 CRYPTO_MIGRATION 的校验放在这里，独立 if ——→ */
+    if ((features & (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_MIGRATION)) &&
+        !(vu_supported_protocol_features(dev) &
+          (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_MIGRATION))) {
+        vu_panic(dev, "Frontend requested unsupported feature: CRYPTO_MIGRATION");
+        return false;
+    }
 
     if (vu_has_protocol_feature(dev,
                                 VHOST_USER_PROTOCOL_F_INBAND_NOTIFICATIONS) &&
@@ -2145,6 +2286,14 @@ vu_process_message(VuDev *dev, VhostUserMsg *vmsg)
         return vu_rem_mem_reg(dev, vmsg);
     case VHOST_USER_GET_SHARED_OBJECT:
         return vu_get_shared_object(dev, vmsg);
+    case VHOST_USER_CRYPTO_FREEZE:
+        return vu_crypto_freeze(dev, vmsg);
+    case VHOST_USER_CRYPTO_SAVE:
+        return vu_crypto_save(dev, vmsg);   // with 1 FD (write end on src)
+    case VHOST_USER_CRYPTO_LOAD:
+        return vu_crypto_load(dev, vmsg);   // with 1 FD (read end on dst)
+    case VHOST_USER_CRYPTO_THAW:
+        return vu_crypto_thaw(dev, vmsg);
     default:
         vmsg_close_fds(vmsg);
         vu_panic(dev, "Unhandled request: %d", vmsg->request);
