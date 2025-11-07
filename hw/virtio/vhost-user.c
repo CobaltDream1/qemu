@@ -104,11 +104,6 @@ typedef enum VhostUserRequest {
     VHOST_USER_GET_SHARED_OBJECT = 41,
     VHOST_USER_SET_DEVICE_STATE_FD = 42,
     VHOST_USER_CHECK_DEVICE_STATE = 43,
-    VHOST_USER_GET_CRYPTO_STATE_FD = 44,
-    VHOST_USER_CRYPTO_FREEZE = 45,
-    VHOST_USER_CRYPTO_SAVE   = 46,  /* with 1 FD (write end on src) */
-    VHOST_USER_CRYPTO_LOAD   = 47,  /* with 1 FD (read end on dst)  */
-    VHOST_USER_CRYPTO_THAW   = 48,
     VHOST_USER_MAX
 } VhostUserRequest;
 
@@ -193,14 +188,6 @@ typedef struct VhostUserInflight {
     uint16_t queue_size;
 } VhostUserInflight;
 
-typedef struct VhostUserCryptoState {
-    uint16_t num_sessions;  /* 可作为容量/Hint，也可回填实际数 */
-    uint16_t reserved;
-    uint32_t reserved2;
-    uint64_t mmap_size;     /* 共享区字节数 */
-    uint64_t mmap_offset;   /* 通常为0，支持后端子区域偏移 */
-} QEMU_PACKED VhostUserCryptoState;
-
 typedef struct VhostUserShared {
     unsigned char uuid[16];
 } VhostUserShared;
@@ -233,7 +220,6 @@ typedef union {
         struct vhost_iotlb_msg iotlb;
         VhostUserConfig config;
         VhostUserCryptoSession session;
-        VhostUserCryptoState crypto_state;
         VhostUserVringArea area;
         VhostUserInflight inflight;
         VhostUserShared object;
@@ -2233,9 +2219,6 @@ static int vhost_user_backend_init(struct vhost_dev *dev, void *opaque,
 
         /* final set of protocol features */
         dev->protocol_features = protocol_features;
-        if (dev->vdev && virtio_get_device_id(dev->vdev) == VIRTIO_ID_CRYPTO) {
-            dev->protocol_features |= (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_MIGRATION);
-        }
         err = vhost_user_set_protocol_features(dev, dev->protocol_features);
         if (err < 0) {
             error_setg_errno(errp, EPROTO, "vhost_backend_init failed");
@@ -2771,93 +2754,6 @@ static int vhost_user_set_inflight_fd(struct vhost_dev *dev,
 
     return vhost_user_write(dev, &msg, &inflight->fd, 1);
 }
-
-static void vhost_user_crypto_state_cleanup(struct vhost_crypto_state *state)
-{
-    if (!state) return;
-    if (state->addr && state->size) {
-        munmap(state->addr, state->size);
-    }
-    if (state->fd >= 0) {
-        close(state->fd);
-    }
-    memset(state, 0, sizeof(*state));
-}
-
-static int vhost_user_get_crypto_state_fd(struct vhost_dev *dev,
-                                          uint16_t num_sessions_hint,
-                                          struct vhost_crypto_state *state)
-{
-    void *addr;
-    int fd;
-    int ret;
-    struct vhost_user *u = dev->opaque;
-    CharBackend *chr = u->user->chr;
-    VhostUserMsg msg = {
-        .hdr.request = VHOST_USER_GET_CRYPTO_STATE_FD,
-        .hdr.flags   = VHOST_USER_VERSION,
-        .hdr.size    = sizeof(msg.payload.crypto_state),
-    };
-
-    msg.payload.crypto_state.num_sessions = num_sessions_hint;
-
-    /* 没协商上，就静默返回成功（与 inflight 行为一致） */
-    if (!virtio_has_feature(dev->protocol_features,
-                            VHOST_USER_PROTOCOL_F_CRYPTO_STATE_SHMFD)) {
-        return 0;
-    }
-
-    ret = vhost_user_write(dev, &msg, NULL, 0);
-    if (ret < 0) {
-        return ret;
-    }
-
-    ret = vhost_user_read(dev, &msg);
-    if (ret < 0) {
-        return ret;
-    }
-
-    if (msg.hdr.request != VHOST_USER_GET_CRYPTO_STATE_FD) {
-        error_report("Unexpected msg: expect %d got %d",
-                     VHOST_USER_GET_CRYPTO_STATE_FD, msg.hdr.request);
-        return -EPROTO;
-    }
-
-    if (msg.hdr.size != sizeof(msg.payload.crypto_state)) {
-        error_report("Bad crypto_state size");
-        return -EPROTO;
-    }
-
-    if (!msg.payload.crypto_state.mmap_size) {
-        /* 后端选择不提供（比如还没初始化），不报错 */
-        return 0;
-    }
-
-    fd = qemu_chr_fe_get_msgfd(chr);
-    if (fd < 0) {
-        error_report("Failed to get crypto-state fd");
-        return -EIO;
-    }
-
-    addr = mmap(0, msg.payload.crypto_state.mmap_size,
-                PROT_READ | PROT_WRITE, MAP_SHARED, fd,
-                msg.payload.crypto_state.mmap_offset);
-    if (addr == MAP_FAILED) {
-        error_report("mmap crypto-state fd failed");
-        close(fd);
-        return -EFAULT;
-    }
-
-    state->addr         = addr;
-    state->fd           = fd;
-    state->size         = msg.payload.crypto_state.mmap_size;
-    state->offset       = msg.payload.crypto_state.mmap_offset;
-    state->num_sessions = msg.payload.crypto_state.num_sessions;
-
-    return 0;
-}
-
-
 
 static void vhost_user_state_destroy(gpointer data)
 {

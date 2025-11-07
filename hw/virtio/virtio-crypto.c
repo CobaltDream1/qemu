@@ -24,6 +24,8 @@
 #include "standard-headers/linux/virtio_ids.h"
 #include "system/cryptodev-vhost.h"
 
+#include "system/cryptodev.h"
+#include "migration/migration.h"   // 声明 migrate_add_blocker/migrate_del_blocker
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 
@@ -1059,7 +1061,6 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(dev);
-    CryptoDevBackendClass *bc;
     int i;
 
     vcrypto->cryptodev = vcrypto->conf.cryptodev;
@@ -1116,12 +1117,12 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
     vcrypto->mstate.blob_len  = 0;
 
     /* 可选：仅当后端未实现 pre_save/post_load 时，阻断迁移 */
-    bc = CRYPTODEV_BACKEND_GET_CLASS(vcrypto->cryptodev);
-    if ((!bc || !bc->pre_save || !bc->post_load) && !vcrypto->migr_blocker) {
-        error_setg(&vcrypto->migr_blocker,
-                   "virtio-crypto: backend migration not available");
-        migrate_add_blocker(vcrypto->migr_blocker, &error_abort);
-    }
+    // bc = CRYPTODEV_BACKEND_GET_CLASS(vcrypto->cryptodev);
+    // if ((!bc || !bc->pre_save || !bc->post_load) && !vcrypto->migr_blocker) {
+    //     error_setg(&vcrypto->migr_blocker,
+    //                "virtio-crypto: backend migration not available");
+    //     migrate_add_blocker(vcrypto->migr_blocker, &error_abort);
+    // }
 }
 
 
@@ -1133,11 +1134,11 @@ static void virtio_crypto_device_unrealize(DeviceState *dev)
     int i;
 
     /* 1) 迁移资源收尾（注意：不要再手动 vmstate_unregister，见下） */
-    if (vcrypto->migr_blocker) {
-        migrate_del_blocker(vcrypto->migr_blocker);
-        error_free(vcrypto->migr_blocker);
-        vcrypto->migr_blocker = NULL;
-    }
+    // if (vcrypto->migr_blocker) {
+    //     migrate_del_blocker(vcrypto->migr_blocker);
+    //     error_free(vcrypto->migr_blocker);
+    //     vcrypto->migr_blocker = NULL;
+    // }
     g_free(vcrypto->mstate.blob);
     vcrypto->mstate.blob = NULL;
     vcrypto->mstate.blob_len = 0;
@@ -1171,18 +1172,18 @@ static void virtio_crypto_device_unrealize(DeviceState *dev)
     /* 5) 设备通用清理 */
     virtio_cleanup(vdev);
 }
+
 static int vcrypto_pre_save(void *opaque)
 {
     VirtIOCrypto *s = opaque;
-    s->mstate.status = s->status;
+    CryptoDevBackend *b = s->cryptodev;
+    CryptoDevBackendClass *c = NULL;
+    if (b) {
+        c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
+    };  // ← 取类
 
-    g_free(s->mstate.blob);
-    s->mstate.blob = NULL;
-    s->mstate.blob_len = 0;
-
-    if (s->cryptodev && s->cryptodev->cclass->pre_save) {
-        return s->cryptodev->cclass->pre_save(
-            s->cryptodev, &s->mstate.blob, &s->mstate.blob_len, &s->mstate.epoch);
+    if (c && c->pre_save) {
+        return c->pre_save(b, &s->mstate.blob, &s->mstate.blob_len, &s->mstate.epoch);
     }
     return 0;
 }
@@ -1190,16 +1191,18 @@ static int vcrypto_pre_save(void *opaque)
 static int vcrypto_post_load(void *opaque, int version_id)
 {
     VirtIOCrypto *s = opaque;
-    (void)version_id;
+    CryptoDevBackend *b = s->cryptodev;
+    CryptoDevBackendClass *c = NULL;
+    if (b) {
+        c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
+    }  // ← 取类
 
-    s->status = s->mstate.status;
-
-    if (s->cryptodev && s->cryptodev->cclass->post_load) {
-        return s->cryptodev->cclass->post_load(
-            s->cryptodev, s->mstate.blob, s->mstate.blob_len, s->mstate.epoch);
+    if (c && c->post_load) {
+        return c->post_load(b, s->mstate.blob, s->mstate.blob_len, s->mstate.epoch);
     }
     return 0;
 }
+
 
 
 

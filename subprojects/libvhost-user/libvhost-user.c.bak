@@ -122,6 +122,8 @@ static inline bool vu_has_protocol_feature(VuDev *dev, unsigned int fbit)
     return has_feature(dev->protocol_features, fbit);
 }
 
+
+
 const char *
 vu_request_to_string(unsigned int req)
 {
@@ -1660,7 +1662,8 @@ vu_get_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
                         1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER |
                         1ULL << VHOST_USER_PROTOCOL_F_BACKEND_SEND_FD |
                         1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK |
-                        1ULL << VHOST_USER_PROTOCOL_F_CONFIGURE_MEM_SLOTS;
+                        1ULL << VHOST_USER_PROTOCOL_F_CONFIGURE_MEM_SLOTS |
+
 
     if (have_userfault()) {
         features |= 1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT;
@@ -1689,6 +1692,36 @@ vu_get_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
     return true;
 }
 
+static uint64_t vu_supported_protocol_features(VuDev *dev)
+{
+    uint64_t f = 0;
+
+    /* 基础位，与 vu_get_protocol_features_exec() 保持一致 */
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_MQ;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_BACKEND_REQ;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_BACKEND_SEND_FD;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK;
+    f |= 1ULL << VHOST_USER_PROTOCOL_F_CONFIGURE_MEM_SLOTS;
+
+
+    if (have_userfault()) {
+        f |= 1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT;
+    }
+    if (dev->iface->get_config && dev->iface->set_config) {
+        f |= 1ULL << VHOST_USER_PROTOCOL_F_CONFIG;
+    }
+    if (dev->iface->get_protocol_features) {
+        f |= dev->iface->get_protocol_features(dev);
+    }
+#ifndef MFD_ALLOW_SEALING
+    f &= ~(1ULL << VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD);
+#endif
+    return f;
+}
+
+
 static bool
 vu_set_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
@@ -1697,6 +1730,7 @@ vu_set_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
     DPRINT("u64: 0x%016"PRIx64"\n", features);
 
     dev->protocol_features = vmsg->payload.u64;
+
 
     if (vu_has_protocol_feature(dev,
                                 VHOST_USER_PROTOCOL_F_INBAND_NOTIFICATIONS) &&
