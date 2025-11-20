@@ -106,10 +106,11 @@ typedef enum VhostUserRequest {
     VHOST_USER_GET_SHARED_OBJECT = 41,
     VHOST_USER_SET_DEVICE_STATE_FD = 42,
     VHOST_USER_CHECK_DEVICE_STATE = 43,
-    VHOST_USER_CREATE_COMPRESS_SESSION = 26,
-    VHOST_USER_CLOSE_COMPRESS_SESSION = 27,
     VHOST_USER_MAX
 } VhostUserRequest;
+
+#define VHOST_USER_CREATE_COMPRESS_SESSION VHOST_USER_CREATE_CRYPTO_SESSION
+#define VHOST_USER_CLOSE_COMPRESS_SESSION VHOST_USER_CLOSE_CRYPTO_SESSION
 
 typedef enum VhostUserBackendRequest {
     VHOST_USER_BACKEND_NONE = 0,
@@ -1389,6 +1390,8 @@ static int vhost_user_set_vring_addr(struct vhost_dev *dev,
         .hdr.size = sizeof(msg.payload.addr),
     };
 
+    warn_report("%s %d %p", __FUNCTION__, __LINE__, (void*)addr->avail_user_addr);
+
     /*
      * wait for a reply if logging is enabled to make sure
      * backend is actually logging changes
@@ -2546,6 +2549,7 @@ static int vhost_user_crypto_create_session(struct vhost_dev *dev,
                                             void *session_info,
                                             uint64_t *session_id)
 {
+    warn_report("%s %d", __FUNCTION__, __LINE__);
     int ret;
     bool crypto_session = virtio_has_feature(dev->protocol_features,
                                        VHOST_USER_PROTOCOL_F_CRYPTO_SESSION);
@@ -2685,7 +2689,7 @@ static int vhost_user_compress_create_session(struct vhost_dev *dev,
     VhostUserMsg msg = {
         .hdr.request = VHOST_USER_CREATE_COMPRESS_SESSION,
         .hdr.flags = VHOST_USER_VERSION,
-        .hdr.size = sizeof(msg.payload.session),
+        .hdr.size = sizeof(msg.payload.compress_session),
     };
 
     assert(dev->vhost_ops->backend_type == VHOST_BACKEND_TYPE_USER);
@@ -2707,8 +2711,9 @@ static int vhost_user_compress_create_session(struct vhost_dev *dev,
                sizeof(CryptoDevBackendSymSessionInfo));
     }
 
-    msg.payload.session.op_code = backend_info->op_code;
-    msg.payload.session.session_id = backend_info->session_id;
+    msg.payload.compress_session.op_code = backend_info->op_code;
+
+    msg.payload.compress_session.session_id = backend_info->session_id;
     ret = vhost_user_write(dev, &msg, NULL, 0);
     if (ret < 0) {
         error_report("vhost_user_write() return %d, create session failed",
@@ -2729,17 +2734,17 @@ static int vhost_user_compress_create_session(struct vhost_dev *dev,
         return -EPROTO;
     }
 
-    if (msg.hdr.size != sizeof(msg.payload.session)) {
+    if (msg.hdr.size != sizeof(msg.payload.compress_session)) {
         error_report("Received bad msg size.");
         return -EPROTO;
     }
 
-    if (msg.payload.session.session_id < 0) {
+    if (msg.payload.compress_session.session_id < 0) {
         error_report("Bad session id: %" PRId64 "",
-                              msg.payload.session.session_id);
+                              msg.payload.compress_session.session_id);
         return -EINVAL;
     }
-    *session_id = msg.payload.session.session_id;
+    *session_id = msg.payload.compress_session.session_id;
 
     return 0;
 }

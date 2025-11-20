@@ -115,6 +115,8 @@ virtio_crypto_create_sym_session(VirtIOCrypto *vcrypto,
                struct iovec *iov, unsigned int out_num,
                VirtIOCryptoSessionReq *sreq)
 {
+    warn_report("create sym session");
+
     VirtIODevice *vdev = VIRTIO_DEVICE(vcrypto);
     CryptoDevBackendSymSessionInfo *sym_info = &sreq->info.u.sym_sess_info;
     int queue_index;
@@ -337,6 +339,8 @@ out:
 
 static void virtio_crypto_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 {
+    warn_report("crypto handle ctrl");
+
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(vdev);
     struct virtio_crypto_op_ctrl_req ctrl;
     VirtQueueElement *elem;
@@ -1163,7 +1167,6 @@ static void virtio_crypto_get_config(VirtIODevice *vdev, uint8_t *config)
 static bool virtio_crypto_started(VirtIOCrypto *c, uint8_t status)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(c);
-    warn_report("%s %d: %u %u %u", __FUNCTION__, __LINE__, status, c->status, vdev->vm_running);
     return (status & VIRTIO_CONFIG_S_DRIVER_OK) &&
         (c->status & VIRTIO_CRYPTO_S_HW_READY) && vdev->vm_running;
 }
@@ -1174,21 +1177,17 @@ static void virtio_crypto_vhost_status(VirtIOCrypto *c, uint8_t status)
     int queues = c->multiqueue ? c->max_queues : 1;
     CryptoDevBackend *b = c->cryptodev;
     CryptoDevBackendClient *cc = b->conf.peers.ccs[0];
-        warn_report("1%s, %d", __FUNCTION__, __LINE__);
 
     if (!cryptodev_get_vhost(cc, b, 0)) {
         return;
     }
-        warn_report("2%s, %d", __FUNCTION__, __LINE__);
 
     if ((virtio_crypto_started(c, status)) == !!c->vhost_started) {
         return;
     }
-        warn_report("3%s, %d", __FUNCTION__, __LINE__);
 
     if (!c->vhost_started) {
         int r;
-        warn_report("4%s, %d", __FUNCTION__, __LINE__);
         c->vhost_started = 1;
         r = cryptodev_vhost_start(vdev, queues);
         if (r < 0) {

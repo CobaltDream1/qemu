@@ -120,6 +120,7 @@ int compressdev_backend_create_session(
     CompressDevBackendClass *bc =
                       COMPRESSDEV_BACKEND_GET_CLASS(backend);
 
+    warn_report("%s %d %d", __FUNCTION__, __LINE__, sess_info->dir);
     if (bc->create_session) {
         return bc->create_session(backend, sess_info, queue_index, cb, opaque);
     }

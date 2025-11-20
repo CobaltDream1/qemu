@@ -59,9 +59,15 @@ virtio_comp_stateless_create_session(VirtIOCompress *vcompress,
     int queue_index;
 
     sreq->info.op_code = opcode;
+    sreq->info.dir = ldl_le_p(&sess_req->req.para.op);
     stateless_info->comp_algo = ldl_le_p(&sess_req->req.para.algo);
     stateless_info->direction = ldl_le_p(&sess_req->req.para.op);
-
+    stateless_info->level = ldl_le_p(&sess_req->req.para.level);
+    stateless_info->window_size = ldl_le_p(&sess_req->req.para.window_size);
+    stateless_info->chksum = ldl_le_p(&sess_req->req.para.chksum);
+    stateless_info->hash_algo = ldl_le_p(&sess_req->req.para.hash_algo);
+    warn_report("%s %d %d %d", __FUNCTION__, __LINE__, 
+        stateless_info->comp_algo, stateless_info->direction);
     switch (stateless_info->comp_algo) {
     case VIRTIO_COMP_ALGO_DEFLATE:
         stateless_info->u.deflate.huffman =
@@ -73,6 +79,8 @@ virtio_comp_stateless_create_session(VirtIOCompress *vcompress,
     default:
         return -VIRTIO_COMP_ERR;
     }
+    warn_report("%s %d %d %d", __FUNCTION__, __LINE__, 
+        stateless_info->u.deflate.huffman, stateless_info->level);
 
     queue_index = virtio_comp_vq2q(queue_id);
     return compressdev_backend_create_session(vcompress->compressdev, &sreq->info,
@@ -200,6 +208,7 @@ out:
 
 static void virtio_comp_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 {
+    warn_report("comp handle ctrl");
     VirtIOCompress *vcompress = VIRTIO_COMP(vdev);
     struct virtio_comp_op_ctrl_req ctrl;
     VirtQueueElement *elem;
@@ -221,6 +230,7 @@ static void virtio_comp_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         if (!elem) {
             break;
         }
+        warn_report("%s %d %p", __FUNCTION__, __LINE__, elem);
         if (elem->out_num < 1 || elem->in_num < 1) {
             virtio_error(vdev, "virtio-comp ctrl missing headers");
             virtqueue_detach_element(vq, elem, 0);
@@ -251,6 +261,7 @@ static void virtio_comp_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         sreq->vdev = vdev;
         sreq->vq = vq;
         sreq->elem = elem;
+        warn_report("%s %d %u", __FUNCTION__, __LINE__, opcode);
 
         switch (opcode) {
         case VIRTIO_COMP_STATEFUL_CREATE_SESSION:
@@ -752,7 +763,7 @@ static void virtio_comp_device_realize(DeviceState *dev, Error **errp)
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOCompress *vcompress = VIRTIO_COMP(dev);
     int i;
-    warn_report( "crypto device realize\n");
+    warn_report( "comp device realize\n");
 
     vcompress->compressdev = vcompress->conf.compressdev;
     if (vcompress->compressdev == NULL) {
@@ -785,6 +796,7 @@ static void virtio_comp_device_realize(DeviceState *dev, Error **errp)
     }
 
     vcompress->ctrl_vq = virtio_add_queue(vdev, 1024, virtio_comp_handle_ctrl);
+    warn_report( "%d add crtl queue %p %d\n", __LINE__, virtio_comp_handle_ctrl, compressdev_backend_is_ready(vcompress->compressdev));
     if (!compressdev_backend_is_ready(vcompress->compressdev)) {
         vcompress->status &= ~VIRTIO_COMP_S_HW_READY;
     } else {
