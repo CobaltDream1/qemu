@@ -40,10 +40,10 @@
 # define VHOST_USER_NEED_REPLY_MASK (1u << 3)
 #endif
 
-#define VHOST_USER_CRYPTO_FREEZE      28
-#define VHOST_USER_CRYPTO_SAVE_STATE  29
-#define VHOST_USER_CRYPTO_LOAD_STATE  30
-#define VHOST_USER_CRYPTO_THAW        31
+#define VHOST_USER_CRYPTO_FREEZE      50
+#define VHOST_USER_CRYPTO_SAVE_STATE  51
+#define VHOST_USER_CRYPTO_LOAD_STATE  52
+#define VHOST_USER_CRYPTO_THAW        53
 /**
  * @TYPE_CRYPTODEV_BACKEND_VHOST_USER:
  * name of backend that uses vhost user server
