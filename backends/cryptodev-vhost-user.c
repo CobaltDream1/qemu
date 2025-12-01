@@ -101,6 +101,80 @@ static int vuc_send_with_fd_chr(CharBackend *chr, uint32_t req, int fd)
     int ret = qemu_chr_fe_write_all(chr, (const uint8_t *)&hdr, sizeof(hdr));
     return (ret == sizeof(hdr)) ? 0 : -EIO;
 }
+/* 读取一条 vhost-user reply，并根据 u64 状态返回 0/错误 */
+static int vuc_wait_reply_chr(CharBackend *chr)
+{
+    VuHdr rhdr;
+    int ret;
+
+    /* 1. 先读 reply 的头（VhostUserMsg 的前三个字段布局兼容 VuHdr） */
+    ret = qemu_chr_fe_read_all(chr, (uint8_t *)&rhdr, sizeof(rhdr));
+    if (ret != sizeof(rhdr)) {
+        return -EIO;
+    }
+
+    if (rhdr.size == 0) {
+        /* 无 payload，默认认为 OK（这取决于你 DPDK 侧的实现策略） */
+        return 0;
+    }
+
+    /* 2. 读 payload（我们约定 DPDK 只塞一个 u64：0=OK，1=ERR） */
+    if (rhdr.size < sizeof(uint64_t)) {
+        /* 协议不一致，读掉剩余但报错 */
+        uint8_t dummy[64];
+        uint32_t left = rhdr.size;
+        while (left) {
+            uint32_t chunk = MIN(left, (uint32_t)sizeof(dummy));
+            ret = qemu_chr_fe_read_all(chr, dummy, chunk);
+            if (ret != chunk) {
+                return -EIO;
+            }
+            left -= chunk;
+        }
+        return -EIO;
+    }
+
+    uint64_t status;
+    ret = qemu_chr_fe_read_all(chr, (uint8_t *)&status, sizeof(status));
+    if (ret != sizeof(status)) {
+        return -EIO;
+    }
+
+    /* DPDK 约定：payload.u64 = (msg_result == ERR) */
+    if (status != 0) {
+        return -EIO;   /* 或者返回 -EBUSY，随你定义 */
+    }
+
+    /* 如果还有剩余 payload（一般不会有），读掉后忽略 */
+    uint32_t extra = rhdr.size - sizeof(uint64_t);
+    while (extra) {
+        uint8_t dummy[64];
+        uint32_t chunk = MIN(extra, (uint32_t)sizeof(dummy));
+        ret = qemu_chr_fe_read_all(chr, dummy, chunk);
+        if (ret != chunk) {
+            return -EIO;
+        }
+        extra -= chunk;
+    }
+
+    return 0;
+}
+/* 只发一个简单的 vhost-user header，不携带 FD */
+static int vuc_send_simple_chr(CharBackend *chr, uint32_t req)
+{
+    VuHdr hdr = {
+        .request = req,
+        .flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
+        .size    = 0,
+    };
+
+    int ret = qemu_chr_fe_write_all(chr, (const uint8_t *)&hdr, sizeof(hdr));
+    if (ret != sizeof(hdr)) {
+        return -EIO;
+    }
+
+    return vuc_wait_reply_chr(chr);
+}
 /* 改名为带前缀版本 */
 static int vuc_read_full(int fd, void *buf, size_t count) {
     uint8_t *p = buf;
@@ -143,21 +217,53 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
     *len  = 0;
     *epoch = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 
+    /*
+     * 0) 先 FREEZE：
+     *    通过 vhost-user 控制通道发送 VHOST_USER_CRYPTO_FREEZE，
+     *    等待 DPDK 那边 vhost_crypto_freeze() 返回（inflight 清零或失败）。
+     */
+    r = vuc_send_simple_chr(&s->chr, VHOST_USER_CRYPTO_FREEZE);
+    if (r < 0) {
+        /* FREEZE 失败，直接让迁移失败（或者改成打印 log 视需求） */
+        return r;
+    }
+
+    /*
+     * 1) 创建 socketpair：
+     *    sv[1] 会通过 vhost-user 传给 DPDK，
+     *    sv[0] 留在 QEMU 用来读回 snapshot 数据。
+     */
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
         return -errno;
     }
 
-    /* 1) 通过 chardev 发送 SAVE_STATE 请求，并附带一个 FD 给后端 */
+    /*
+     * 2) 通过 chardev 发送 SAVE_STATE 请求，并附带一个 FD 给后端。
+     *    这里只是 send，不在这里等 ACK，避免和数据面死锁。
+     */
     r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_SAVE_STATE, sv[1]);
     if (r < 0) {
         goto out;
     }
 
-    /* 2) 从 sv[0] 读取“快照头” */
+    /* QEMU 侧不再使用 sv[1]，可以立刻关掉，减少资源占用。 */
+    close(sv[1]);
+    sv[1] = -1;
+
+    /*
+     * 3) 从 sv[0] 读取“快照头”：
+     *    这是 DPDK vhost_crypto_save_state() 写出的 VC_SnapHdr。
+     */
     VC_SnapHdr hdr;
     r = vuc_read_full(sv[0], &hdr, sizeof(hdr));
     if (r) {                           /* r!=0 表示失败 */
         r = -EIO;
+        goto out;
+    }
+
+    /* 简单的 header 校验，可以按需加 magic/version 的检查 */
+    if (le32_to_cpu(hdr.magic) != VC_SNAP_MAGIC) {
+        r = -EINVAL;
         goto out;
     }
 
@@ -167,7 +273,10 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
         goto out;
     }
 
-    /* 3) 读取 payload */
+    /*
+     * 4) 读取 payload（TLV 快照）：
+     *    整个 TLV 区从 sv[0] 读出来，作为 blob 返回。
+     */
     uint8_t *buf = g_malloc(paylen);
     r = vuc_read_full(sv[0], buf, paylen);
     if (r) {
@@ -176,21 +285,43 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
         goto out;
     }
 
-    /* 4) （可选）CRC 校验：先跳过，链路打通后再加
-       // #include "qemu/crc32c.h"
-       // if (crc32c(0, buf, paylen) != le32_to_cpu(hdr.crc32)) {
-       //     g_free(buf); r = -EBADMSG; goto out;
-       // }
-    */
+    /* 可选 CRC 校验，链路打通后再打开：
+     *
+     * // #include "qemu/crc32c.h"
+     * if (crc32c(0, buf, paylen) != le32_to_cpu(hdr.crc32)) {
+     *     g_free(buf);
+     *     r = -EBADMSG;
+     *     goto out;
+     * }
+     */
 
-    /* 5) 交付给 VMState */
+    /*
+     * 5) 把 snapshot 交给 VMState，之后由迁移框架写入 migration stream。
+     */
     *blob = buf;
     *len  = paylen;
+
+    /*
+     * 6) 最后一步：从 vhost 控制通道等一次 ACK，
+     *    确认 vhost_crypto_save_state() 在 DPDK 侧执行成功。
+     *    这一步会读取 send_with_fd_chr 打上 NEED_REPLY 触发的 reply。
+     */
+    r = vuc_wait_reply_chr(&s->chr);
+    if (r < 0) {
+        /* ACK 表示失败，则释放 blob，让迁移失败更安全 */
+        g_free(*blob);
+        *blob = NULL;
+        *len  = 0;
+        goto out;
+    }
+
     r = 0;
 
 out:
-    if (sv[0] >= 0) close(sv[0]);
-    if (sv[1] >= 0) close(sv[1]);
+    if (sv[0] >= 0)
+        close(sv[0]);
+    if (sv[1] >= 0)
+        close(sv[1]);
     return r;
 }
 static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
@@ -213,26 +344,51 @@ static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
         return -errno;
     }
 
-    /* 1) 通过 chardev 发送 LOAD_STATE，并附带 sv[1] 给后端 */
+    /*
+     * 1) 通过 chardev 发送 LOAD_STATE，并附带 sv[1] 给后端。
+     *    send_with_fd_chr 只负责 send，不在这里等 ACK。
+     */
     r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
-    /* 不再需要写端，先关掉，避免泄漏 */
+    /* QEMU 不再使用写端 sv[1]，立刻关闭避免泄漏 */
     close(sv[1]);
     sv[1] = -1;
     if (r < 0) {
         goto out;
     }
 
-    /* 2) 把 VMState 的 blob 发送给后端（vuc_write_full 返回 0 表成功） */
+    /*
+     * 2) 把 VMState 的 blob 通过 sv[0] 写给后端：
+     *    DPDK vhost_crypto_load_state() 在 fd 上 read 完全部 TLV 后返回。
+     */
     r = vuc_write_full(sv[0], blob, len);
     if (r) {                  /* 非 0 说明写失败/被对端中断 */
         r = -EIO;
         goto out;
     }
 
+    /*
+     * 3) 写完数据后，再从 vhost 控制通道等一次 ACK，
+     *    确认 vhost_crypto_load_state() 在 DPDK 侧执行成功。
+     *    这一步对应 send_with_fd_chr 打上 NEED_REPLY 触发的 reply。
+     */
+    r = vuc_wait_reply_chr(&s->chr);
+    if (r < 0) {
+        goto out;
+    }
+
+    /*
+     * 4) （以后你可以在这里加 THAW）：
+     *    r = vuc_send_simple_chr(&s->chr, VHOST_USER_CRYPTO_THAW);
+     *    if (r < 0) { ... }
+     */
+
     r = 0;
+
 out:
-    if (sv[0] >= 0) close(sv[0]);
-    if (sv[1] >= 0) close(sv[1]);
+    if (sv[0] >= 0)
+        close(sv[0]);
+    if (sv[1] >= 0)
+        close(sv[1]);
     return r;
 }
 static int
