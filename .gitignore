@@ -29,3 +29,4 @@ GTAGS
 *.vmdk
 *.log
 *.tmp
+*.sh
