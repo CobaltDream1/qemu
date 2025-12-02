@@ -997,7 +997,6 @@ static uint64_t virtio_crypto_get_features(VirtIODevice *vdev,
                                            uint64_t features,
                                            Error **errp)
 {
-    features |= (1ULL << VHOST_F_LOG_ALL);
     return features;
 }
 
@@ -1179,13 +1178,21 @@ static int vcrypto_pre_save(void *opaque)
     VirtIOCrypto *s = opaque;
     CryptoDevBackend *b = s->cryptodev;
     CryptoDevBackendClass *c = NULL;
+
+    fprintf(stderr, ">>> [pre_save] entered\n");
+
     if (b) {
         c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
-    };  // ← 取类
+    }
 
     if (c && c->pre_save) {
-        return c->pre_save(b, &s->mstate.blob, &s->mstate.blob_len, &s->mstate.epoch);
+        int r = c->pre_save(b, &s->mstate.blob, &s->mstate.blob_len, &s->mstate.epoch);
+        fprintf(stderr, ">>> [pre_save] called backend, blob_len=%u, epoch=%lu, ret=%d\n",
+                s->mstate.blob_len, s->mstate.epoch, r);
+        return r;
     }
+
+    fprintf(stderr, ">>> [pre_save] no backend or pre_save not set\n");
     return 0;
 }
 
@@ -1194,13 +1201,21 @@ static int vcrypto_post_load(void *opaque, int version_id)
     VirtIOCrypto *s = opaque;
     CryptoDevBackend *b = s->cryptodev;
     CryptoDevBackendClass *c = NULL;
+
+    fprintf(stderr, ">>> [post_load] entered, version=%d\n", version_id);
+
     if (b) {
         c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
-    }  // ← 取类
+    }
 
     if (c && c->post_load) {
-        return c->post_load(b, s->mstate.blob, s->mstate.blob_len, s->mstate.epoch);
+        int r = c->post_load(b, s->mstate.blob, s->mstate.blob_len, s->mstate.epoch);
+        fprintf(stderr, ">>> [post_load] called backend, blob_len=%u, epoch=%lu, ret=%d\n",
+                s->mstate.blob_len, s->mstate.epoch, r);
+        return r;
     }
+
+    fprintf(stderr, ">>> [post_load] no backend or post_load not set\n");
     return 0;
 }
 
