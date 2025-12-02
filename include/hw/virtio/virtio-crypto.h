@@ -83,10 +83,10 @@ typedef struct VirtIOCryptoQueue {
 } VirtIOCryptoQueue;
 
 typedef struct VirtIOCryptoMigrateState {
-    uint8_t  status;     /* 可选：前端自己的轻量状态，没有就删 */
-    uint64_t epoch;      /* 可选：版本/幂等标签 */
-    uint8_t *blob;       /* 后端快照字节串 */
-    uint32_t blob_len;   /* 字节串长度 */
+    uint8_t  status;     /* 可选：保存设备 status，一般问题不大 */
+    uint32_t blob_len;   /* backend 快照的长度 */
+    uint64_t epoch;      /* 你在 vhost-user 那边传回来的 epoch */
+    uint8_t *blob;       /* 指向 backend 返回的那坨 TLV 快照 */
 } VirtIOCryptoMigrateState;
 
 

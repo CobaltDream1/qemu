@@ -1213,13 +1213,14 @@ static const VMStateDescription vmstate_virtio_crypto = {
     .pre_save  = vcrypto_pre_save,
     .post_load = vcrypto_post_load,
     .fields = (const VMStateField[]) {
-        /* 只有“真需要”才保留；如果没有设备侧语义就删掉这行 */
-        VMSTATE_UINT8 (mstate.status, VirtIOCrypto),
+        /* 可选，看你要不要真的迁移这个 status */
+        VMSTATE_UINT8 (mstate.status,   VirtIOCrypto),
+        VMSTATE_UINT64(mstate.epoch,    VirtIOCrypto),
 
-        /* 可选：用于后端 LOAD 兼容/幂等判断 */
-        VMSTATE_UINT64(mstate.epoch,  VirtIOCrypto),
+        /* ★ 这行是你现在缺的：把 blob_len 单独存起来 */
+        VMSTATE_UINT32(mstate.blob_len, VirtIOCrypto),
 
-        /* 关键：后端快照字节串 */
+        /* 然后根据 blob_len 长度分配 buffer 并同步内容 */
         VMSTATE_VBUFFER_ALLOC_UINT32(mstate.blob, VirtIOCrypto,
                                      0, NULL, mstate.blob_len),
 
