@@ -20,4 +20,12 @@ GTAGS
 *.swp
 *.patch
 *.gcov
+# QEMU 镜像 & 临时文件
+*.img
 *.qcow2
+*.qcow
+*.iso
+*.vdi
+*.vmdk
+*.log
+*.tmp
