@@ -997,6 +997,7 @@ static uint64_t virtio_crypto_get_features(VirtIODevice *vdev,
                                            uint64_t features,
                                            Error **errp)
 {
+    features |= (1ULL << VHOST_F_LOG_ALL);
     return features;
 }
 
