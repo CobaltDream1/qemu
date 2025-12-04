@@ -1,3 +1,4 @@
+(
 sudo ../qemu/build/qemu-system-x86_64 \
         -cpu host \
         -m 8192 \
@@ -13,3 +14,4 @@ sudo ../qemu/build/qemu-system-x86_64 \
         -object memory-backend-file,id=mem,size=8G,mem-path=/dev/hugepages,share=on \
         -mem-prealloc \
         -numa node,memdev=mem 
+) 2>&1 | tee /tmp/qemu_output_$(date +%Y%m%d_%H%M%S).log
