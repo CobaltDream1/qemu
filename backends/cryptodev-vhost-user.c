@@ -213,102 +213,89 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
     int sv[2] = { -1, -1 };
     int r = -1;
 
-    *blob = NULL;
-    *len  = 0;
+    *blob  = NULL;
+    *len   = 0;
     *epoch = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 
-    /*
-     * 0) 先 FREEZE：
-     *    通过 vhost-user 控制通道发送 VHOST_USER_CRYPTO_FREEZE，
-     *    等待 DPDK 那边 vhost_crypto_freeze() 返回（inflight 清零或失败）。
-     */
+    /* 0) FREEZE：让后端把 inflight 请求 drain 掉 */
     r = vuc_send_simple_chr(&s->chr, VHOST_USER_CRYPTO_FREEZE);
     if (r < 0) {
-        /* FREEZE 失败，直接让迁移失败（或者改成打印 log 视需求） */
         return r;
     }
 
-    /*
-     * 1) 创建 socketpair：
-     *    sv[1] 会通过 vhost-user 传给 DPDK，
-     *    sv[0] 留在 QEMU 用来读回 snapshot 数据。
-     */
+    /* 1) 建立 socketpair，sv[1] 传给后端，sv[0] 自己读 */
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
         return -errno;
     }
 
-    /*
-     * 2) 通过 chardev 发送 SAVE_STATE 请求，并附带一个 FD 给后端。
-     *    这里只是 send，不在这里等 ACK，避免和数据面死锁。
-     */
+    /* 2) 发 SAVE_STATE + FD 给 DPDK */
     r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_SAVE_STATE, sv[1]);
     if (r < 0) {
         goto out;
     }
-
-    /* QEMU 侧不再使用 sv[1]，可以立刻关掉，减少资源占用。 */
     close(sv[1]);
     sv[1] = -1;
 
-    /*
-     * 3) 从 sv[0] 读取“快照头”：
-     *    这是 DPDK vhost_crypto_save_state() 写出的 VC_SnapHdr。
-     */
+    /* 3) 从 sv[0] 读出 DPDK 写的 VC_SnapHdr */
     VC_SnapHdr hdr;
     r = vuc_read_full(sv[0], &hdr, sizeof(hdr));
-    if (r) {                           /* r!=0 表示失败 */
+    if (r) {
         r = -EIO;
         goto out;
     }
 
-    /* 简单的 header 校验，可以按需加 magic/version 的检查 */
     if (le32_to_cpu(hdr.magic) != VC_SNAP_MAGIC) {
+        fprintf(stderr,
+                "[qemu][pre_save] bad magic from backend: 0x%x\n",
+                le32_to_cpu(hdr.magic));
         r = -EINVAL;
         goto out;
     }
 
     uint32_t paylen = le32_to_cpu(hdr.payload_len);
-    if (!paylen || paylen > (64u << 20)) {   /* 防御：最大 64MB */
+    if (!paylen || paylen > (64u << 20)) { /* 最多 64MB 防御下 */
+        fprintf(stderr,
+                "[qemu][pre_save] invalid payload_len=%u\n", paylen);
         r = -EINVAL;
         goto out;
     }
 
-    /*
-     * 4) 读取 payload（TLV 快照）：
-     *    整个 TLV 区从 sv[0] 读出来，作为 blob 返回。
-     */
-    uint8_t *buf = g_malloc(paylen);
-    r = vuc_read_full(sv[0], buf, paylen);
+    /* 4) 分配一块“header + payload”的 buffer */
+    uint32_t total = sizeof(hdr) + paylen;
+    uint8_t *buf = g_malloc(total);
+
+    /* 4.1) 把 header 放在前面 */
+    memcpy(buf, &hdr, sizeof(hdr));
+
+    /* 4.2) 接着读 payload 到 buf + sizeof(hdr) */
+    r = vuc_read_full(sv[0], buf + sizeof(hdr), paylen);
     if (r) {
+        fprintf(stderr, "[qemu][pre_save] read payload failed\n");
         g_free(buf);
         r = -EIO;
         goto out;
     }
 
-    /* 可选 CRC 校验，链路打通后再打开：
-     *
-     * // #include "qemu/crc32c.h"
-     * if (crc32c(0, buf, paylen) != le32_to_cpu(hdr.crc32)) {
-     *     g_free(buf);
-     *     r = -EBADMSG;
-     *     goto out;
-     * }
-     */
-
+    /* 可选：CRC 校验（hdr.crc32 覆盖 TLV 区域） */
     /*
-     * 5) 把 snapshot 交给 VMState，之后由迁移框架写入 migration stream。
-     */
+    uint32_t crc_calc = crc32c(0, buf + sizeof(hdr), paylen);
+    if (crc_calc != le32_to_cpu(hdr.crc32)) {
+        fprintf(stderr,
+                "[qemu][pre_save] crc mismatch: got=0x%x expect=0x%x\n",
+                crc_calc, le32_to_cpu(hdr.crc32));
+        g_free(buf);
+        r = -EBADMSG;
+        goto out;
+    }
+    */
+
+    /* 5) 把“完整 snapshot = hdr + TLV”传给 VMState */
     *blob = buf;
-    *len  = paylen;
+    *len  = total;
 
-    /*
-     * 6) 最后一步：从 vhost 控制通道等一次 ACK，
-     *    确认 vhost_crypto_save_state() 在 DPDK 侧执行成功。
-     *    这一步会读取 send_with_fd_chr 打上 NEED_REPLY 触发的 reply。
-     */
+    /* 6) 再从控制通道拿一次 ACK，确认后端 save 成功 */
     r = vuc_wait_reply_chr(&s->chr);
     if (r < 0) {
-        /* ACK 表示失败，则释放 blob，让迁移失败更安全 */
         g_free(*blob);
         *blob = NULL;
         *len  = 0;
@@ -318,12 +305,15 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
     r = 0;
 
 out:
-    if (sv[0] >= 0)
+    if (sv[0] >= 0) {
         close(sv[0]);
-    if (sv[1] >= 0)
+    }
+    if (sv[1] >= 0) {
         close(sv[1]);
+    }
     return r;
 }
+
 static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
                                           const uint8_t *blob, uint32_t len,
                                           uint64_t epoch)
