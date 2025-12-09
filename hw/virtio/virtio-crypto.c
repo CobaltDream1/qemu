@@ -24,6 +24,11 @@
 #include "standard-headers/linux/virtio_ids.h"
 #include "system/cryptodev-vhost.h"
 
+#include "system/cryptodev.h"
+#include "migration/migration.h"   // 声明 migrate_add_blocker/migrate_del_blocker
+#include "migration/vmstate.h"
+#include "qapi/error.h"
+
 #define VIRTIO_CRYPTO_VM_VERSION 1
 
 typedef struct VirtIOCryptoSessionReq {
@@ -33,6 +38,9 @@ typedef struct VirtIOCryptoSessionReq {
     CryptoDevBackendSessionInfo info;
     CryptoDevCompletionFunc cb;
 } VirtIOCryptoSessionReq;
+
+
+
 
 static void virtio_crypto_free_create_session_req(VirtIOCryptoSessionReq *sreq)
 {
@@ -721,7 +729,7 @@ err:
     g_free(op_info);
     return NULL;
 }
-
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
 static int
 virtio_crypto_handle_sym_req(VirtIOCrypto *vcrypto,
                struct virtio_crypto_sym_data_req *req,
@@ -1061,12 +1069,13 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
     warn_report( "crypto device realize\n");
 
     vcrypto->cryptodev = vcrypto->conf.cryptodev;
-    if (vcrypto->cryptodev == NULL) {
+    if (!vcrypto->cryptodev) {
         error_setg(errp, "'cryptodev' parameter expects a valid object");
         return;
     } else if (cryptodev_backend_is_used(vcrypto->cryptodev)) {
         error_setg(errp, "can't use already used cryptodev backend: %s",
-                   object_get_canonical_path_component(OBJECT(vcrypto->conf.cryptodev)));
+                   object_get_canonical_path_component(
+                       OBJECT(vcrypto->conf.cryptodev)));
         return;
     }
 
@@ -1079,18 +1088,22 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
     }
 
     virtio_init(vdev, VIRTIO_ID_CRYPTO, vcrypto->config_size);
+
+    /* data queues */
     vcrypto->curr_queues = 1;
     vcrypto->vqs = g_new0(VirtIOCryptoQueue, vcrypto->max_queues);
     for (i = 0; i < vcrypto->max_queues; i++) {
         vcrypto->vqs[i].dataq =
-                 virtio_add_queue(vdev, 1024, virtio_crypto_handle_dataq_bh);
+            virtio_add_queue(vdev, 1024, virtio_crypto_handle_dataq_bh);
         vcrypto->vqs[i].dataq_bh =
-                 virtio_bh_new_guarded(dev, virtio_crypto_dataq_bh,
-                                       &vcrypto->vqs[i]);
+            virtio_bh_new_guarded(dev, virtio_crypto_dataq_bh, &vcrypto->vqs[i]);
         vcrypto->vqs[i].vcrypto = vcrypto;
     }
 
+    /* control queue */
     vcrypto->ctrl_vq = virtio_add_queue(vdev, 1024, virtio_crypto_handle_ctrl);
+
+    /* device ready bit */
     if (!cryptodev_backend_is_ready(vcrypto->cryptodev)) {
         vcrypto->status &= ~VIRTIO_CRYPTO_S_HW_READY;
     } else {
@@ -1099,38 +1112,141 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
 
     virtio_crypto_init_config(vdev);
     cryptodev_backend_set_used(vcrypto->cryptodev, true);
+
+    /* ---------- Migration (frontend keeps NO vhost-layer mirrors) ---------- */
+
+    /* 初始化精简迁移状态容器（仅软状态/epoch + 后端快照 blob 占位） */
+    vcrypto->mstate.status    = vcrypto->status;   /* 若不需要可在 VMState 中去掉 */
+    vcrypto->mstate.epoch     = 0;
+    vcrypto->mstate.blob      = NULL;
+    vcrypto->mstate.blob_len  = 0;
+
+    /* 可选：仅当后端未实现 pre_save/post_load 时，阻断迁移 */
+    // bc = CRYPTODEV_BACKEND_GET_CLASS(vcrypto->cryptodev);
+    // if ((!bc || !bc->pre_save || !bc->post_load) && !vcrypto->migr_blocker) {
+    //     error_setg(&vcrypto->migr_blocker,
+    //                "virtio-crypto: backend migration not available");
+    //     migrate_add_blocker(vcrypto->migr_blocker, &error_abort);
+    // }
 }
+
 
 static void virtio_crypto_device_unrealize(DeviceState *dev)
 {
-    VirtIODevice *vdev = VIRTIO_DEVICE(dev);
+    VirtIODevice *vdev   = VIRTIO_DEVICE(dev);
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(dev);
     VirtIOCryptoQueue *q;
-    int i, max_queues;
+    int i;
 
-    max_queues = vcrypto->multiqueue ? vcrypto->max_queues : 1;
-    for (i = 0; i < max_queues; i++) {
-        virtio_delete_queue(vcrypto->vqs[i].dataq);
-        q = &vcrypto->vqs[i];
-        qemu_bh_delete(q->dataq_bh);
+    /* 1) 迁移资源收尾（注意：不要再手动 vmstate_unregister，见下） */
+    // if (vcrypto->migr_blocker) {
+    //     migrate_del_blocker(vcrypto->migr_blocker);
+    //     error_free(vcrypto->migr_blocker);
+    //     vcrypto->migr_blocker = NULL;
+    // }
+    g_free(vcrypto->mstate.blob);
+    vcrypto->mstate.blob = NULL;
+    vcrypto->mstate.blob_len = 0;
+
+    /* 2) 删除所有 data 队列：先 BH，后队列；遍历 max_queues */
+    if (vcrypto->vqs) {
+        for (i = 0; i < vcrypto->max_queues; i++) {
+            q = &vcrypto->vqs[i];
+            if (q->dataq_bh) {
+                qemu_bh_delete(q->dataq_bh);
+                q->dataq_bh = NULL;
+            }
+            if (q->dataq) {
+                virtio_delete_queue(q->dataq);
+                q->dataq = NULL;
+            }
+        }
+        g_free(vcrypto->vqs);
+        vcrypto->vqs = NULL;
     }
 
-    g_free(vcrypto->vqs);
-    virtio_delete_queue(vcrypto->ctrl_vq);
+    /* 3) 删除 control 队列 */
+    if (vcrypto->ctrl_vq) {
+        virtio_delete_queue(vcrypto->ctrl_vq);
+        vcrypto->ctrl_vq = NULL;
+    }
 
-    virtio_cleanup(vdev);
+    /* 4) 标记后端不再被占用（位置放前/后都行，我建议这里提早做） */
     cryptodev_backend_set_used(vcrypto->cryptodev, false);
+
+    /* 5) 设备通用清理 */
+    virtio_cleanup(vdev);
 }
 
+static int vcrypto_pre_save(void *opaque)
+{
+    VirtIOCrypto *s = opaque;
+    CryptoDevBackend *b = s->cryptodev;
+    CryptoDevBackendClass *c = NULL;
+
+    fprintf(stderr, ">>> [pre_save] entered\n");
+
+    if (b) {
+        c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
+    }
+
+    if (c && c->pre_save) {
+        int r = c->pre_save(b, &s->mstate.blob, &s->mstate.blob_len, &s->mstate.epoch);
+        fprintf(stderr, ">>> [pre_save] called backend, blob_len=%u, epoch=%lu, ret=%d\n",
+                s->mstate.blob_len, s->mstate.epoch, r);
+        return r;
+    }
+
+    fprintf(stderr, ">>> [pre_save] no backend or pre_save not set\n");
+    return 0;
+}
+
+static int vcrypto_post_load(void *opaque, int version_id)
+{
+    VirtIOCrypto *s = opaque;
+    CryptoDevBackend *b = s->cryptodev;
+    CryptoDevBackendClass *c = NULL;
+
+    fprintf(stderr, ">>> [post_load] entered, version=%d\n", version_id);
+
+    if (b) {
+        c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
+    }
+
+    if (c && c->post_load) {
+        int r = c->post_load(b, s->mstate.blob, s->mstate.blob_len, s->mstate.epoch);
+        fprintf(stderr, ">>> [post_load] called backend, blob_len=%u, epoch=%lu, ret=%d\n",
+                s->mstate.blob_len, s->mstate.epoch, r);
+        return r;
+    }
+
+    fprintf(stderr, ">>> [post_load] no backend or post_load not set\n");
+    return 0;
+}
+
+
+
+
 static const VMStateDescription vmstate_virtio_crypto = {
-    .name = "virtio-crypto",
-    .unmigratable = 1,
+    .name               = "virtio-crypto",
+    .version_id         = VIRTIO_CRYPTO_VM_VERSION,
     .minimum_version_id = VIRTIO_CRYPTO_VM_VERSION,
-    .version_id = VIRTIO_CRYPTO_VM_VERSION,
+    .pre_save  = vcrypto_pre_save,
+    .post_load = vcrypto_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_VIRTIO_DEVICE,
+        /* 可选，看你要不要真的迁移这个 status */
+        VMSTATE_UINT8 (mstate.status,   VirtIOCrypto),
+        VMSTATE_UINT64(mstate.epoch,    VirtIOCrypto),
+
+        /* ★ 这行是你现在缺的：把 blob_len 单独存起来 */
+        VMSTATE_UINT32(mstate.blob_len, VirtIOCrypto),
+
+        /* 然后根据 blob_len 长度分配 buffer 并同步内容 */
+        VMSTATE_VBUFFER_ALLOC_UINT32(mstate.blob, VirtIOCrypto,
+                                     0, NULL, mstate.blob_len),
+
         VMSTATE_END_OF_LIST()
-    },
+    }
 };
 
 static const Property virtio_crypto_properties[] = {

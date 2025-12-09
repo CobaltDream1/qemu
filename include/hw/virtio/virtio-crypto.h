@@ -19,6 +19,7 @@
 #include "system/iothread.h"
 #include "system/cryptodev.h"
 #include "qom/object.h"
+#include "qapi/error.h"   
 
 
 #define DEBUG_VIRTIO_CRYPTO 0
@@ -81,6 +82,14 @@ typedef struct VirtIOCryptoQueue {
     struct VirtIOCrypto *vcrypto;
 } VirtIOCryptoQueue;
 
+typedef struct VirtIOCryptoMigrateState {
+    uint8_t  status;     /* 可选：保存设备 status，一般问题不大 */
+    uint32_t blob_len;   /* backend 快照的长度 */
+    uint64_t epoch;      /* 你在 vhost-user 那边传回来的 epoch */
+    uint8_t *blob;       /* 指向 backend 返回的那坨 TLV 快照 */
+} VirtIOCryptoMigrateState;
+
+
 struct VirtIOCrypto {
     VirtIODevice parent_obj;
 
@@ -96,6 +105,10 @@ struct VirtIOCrypto {
     uint32_t curr_queues;
     size_t config_size;
     uint8_t vhost_started;
+
+    /* migration support */
+    VirtIOCryptoMigrateState mstate;  // 保存迁移状态
+    Error *migr_blocker;              // 迁移阻断器
 };
 
 #endif /* QEMU_VIRTIO_CRYPTO_H */

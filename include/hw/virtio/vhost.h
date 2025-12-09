@@ -21,6 +21,14 @@ struct vhost_inflight {
     uint16_t queue_size;
 };
 
+struct vhost_crypto_state {
+    void     *addr;
+    int       fd;
+    uint64_t  size;
+    uint64_t  offset;
+    uint16_t  num_sessions;
+};
+
 struct vhost_virtqueue {
     int kick;
     int call;

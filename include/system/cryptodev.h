@@ -211,6 +211,13 @@ struct CryptoDevBackendClass {
 
     int (*do_op)(CryptoDevBackend *backend,
                  CryptoDevBackendOpInfo *op_info);
+    
+                 /* ---------- 新增：迁移支持 ---------- */
+    int (*pre_save)(CryptoDevBackend *backend,
+                    uint8_t **blob, uint32_t *blob_len, uint64_t *epoch);
+
+    int (*post_load)(CryptoDevBackend *backend,
+                     const uint8_t *blob, uint32_t blob_len, uint64_t epoch);
 };
 
 struct CryptoDevBackendClient {
