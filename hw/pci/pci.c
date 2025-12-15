@@ -890,9 +890,30 @@ static bool migrate_is_not_pcie(void *opaque, int version_id)
     return !pci_is_express((PCIDevice *)opaque);
 }
 
+static void dump_pci_cfg_brief(PCIDevice *pdev, const char *tag)
+{
+    fprintf(stderr,
+            "DEBUG[%s] %s devfn=%02x cmd=%02x%02x sts=%02x%02x "
+            "BAR0=%02x%02x%02x%02x BAR1=%02x%02x%02x%02x\n",
+            tag,
+            object_get_typename(OBJECT(pdev)), pdev->devfn,
+            pdev->config[0x04], pdev->config[0x05],   /* Command */
+            pdev->config[0x06], pdev->config[0x07],   /* Status  */
+            pdev->config[0x10], pdev->config[0x11], pdev->config[0x12], pdev->config[0x13], /* BAR0 */
+            pdev->config[0x14], pdev->config[0x15], pdev->config[0x16], pdev->config[0x17]  /* BAR1 */
+    );
+}
+
 static int pci_post_load(void *opaque, int version_id)
 {
+    PCIDevice *pdev = opaque;
+
+    dump_pci_cfg_brief(pdev, "ENTER");
+
     pcie_sriov_pf_post_load(opaque);
+
+    dump_pci_cfg_brief(pdev, "EXIT");
+
     return 0;
 }
 

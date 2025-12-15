@@ -1216,6 +1216,9 @@ static int vcrypto_post_load(void *opaque, int version_id)
     }
 
     fprintf(stderr, ">>> [post_load] no backend or post_load not set\n");
+    fprintf(stderr,
+        "DEBUG: vcrypto_post_load() blob_len=%u\n",
+        s->mstate.blob_len);
     return 0;
 }
 
@@ -1229,20 +1232,18 @@ static const VMStateDescription vmstate_virtio_crypto = {
     .pre_save  = vcrypto_pre_save,
     .post_load = vcrypto_post_load,
     .fields = (const VMStateField[]) {
-        /* 可选，看你要不要真的迁移这个 status */
         VMSTATE_UINT8 (mstate.status,   VirtIOCrypto),
         VMSTATE_UINT64(mstate.epoch,    VirtIOCrypto),
 
-        /* ★ 这行是你现在缺的：把 blob_len 单独存起来 */
-        VMSTATE_UINT32(mstate.blob_len, VirtIOCrypto),
+        /* 不再单独迁移 blob_len */
 
-        /* 然后根据 blob_len 长度分配 buffer 并同步内容 */
         VMSTATE_VBUFFER_ALLOC_UINT32(mstate.blob, VirtIOCrypto,
                                      0, NULL, mstate.blob_len),
 
         VMSTATE_END_OF_LIST()
     }
 };
+
 
 static const Property virtio_crypto_properties[] = {
     DEFINE_PROP_LINK("cryptodev", VirtIOCrypto, conf.cryptodev,
