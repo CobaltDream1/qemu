@@ -1235,14 +1235,17 @@ static const VMStateDescription vmstate_virtio_crypto = {
         VMSTATE_UINT8 (mstate.status,   VirtIOCrypto),
         VMSTATE_UINT64(mstate.epoch,    VirtIOCrypto),
 
-        /* 不再单独迁移 blob_len */
+        /* 显式迁移 blob_len */
+        VMSTATE_UINT32(mstate.blob_len, VirtIOCrypto),
 
+        /* 再按 blob_len 分配+迁移 blob */
         VMSTATE_VBUFFER_ALLOC_UINT32(mstate.blob, VirtIOCrypto,
                                      0, NULL, mstate.blob_len),
 
         VMSTATE_END_OF_LIST()
     }
 };
+
 
 
 static const Property virtio_crypto_properties[] = {
