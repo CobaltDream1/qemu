@@ -892,30 +892,43 @@ static bool migrate_is_not_pcie(void *opaque, int version_id)
 
 static void dump_pci_cfg_brief(PCIDevice *pdev, const char *tag)
 {
+    uint16_t vendor = pdev->config[0] | (pdev->config[1] << 8);
+    uint16_t device = pdev->config[2] | (pdev->config[3] << 8);
+
+    if (vendor != 0x1af4) {
+        return;
+    }
+
     fprintf(stderr,
-            "DEBUG[%s] %s devfn=%02x cmd=%02x%02x sts=%02x%02x "
-            "BAR0=%02x%02x%02x%02x BAR1=%02x%02x%02x%02x\n",
-            tag,
-            object_get_typename(OBJECT(pdev)), pdev->devfn,
-            pdev->config[0x04], pdev->config[0x05],   /* Command */
-            pdev->config[0x06], pdev->config[0x07],   /* Status  */
-            pdev->config[0x10], pdev->config[0x11], pdev->config[0x12], pdev->config[0x13], /* BAR0 */
-            pdev->config[0x14], pdev->config[0x15], pdev->config[0x16], pdev->config[0x17]  /* BAR1 */
-    );
+        "DEBUG[%s] %s devfn=%02x cmd=%02x%02x "
+        "BAR0=%02x%02x%02x%02x BAR1=%02x%02x%02x%02x\n",
+        tag,
+        object_get_typename(OBJECT(pdev)),
+        pdev->devfn,
+        pdev->config[0x04], pdev->config[0x05],
+        pdev->config[0x10], pdev->config[0x11], pdev->config[0x12], pdev->config[0x13],
+        pdev->config[0x14], pdev->config[0x15], pdev->config[0x16], pdev->config[0x17]);
 }
 
 static int pci_post_load(void *opaque, int version_id)
 {
+    static int cnt;
     PCIDevice *pdev = opaque;
 
-    dump_pci_cfg_brief(pdev, "ENTER");
+    if (cnt++ < 64) {
+        uint16_t vendor = pdev->config[0] | (pdev->config[1] << 8);
+        uint16_t device = pdev->config[2] | (pdev->config[3] << 8);
+        fprintf(stderr,
+                "PCI-POSTLOAD: %s devfn=%02x vid:did=%04x:%04x cmd=%02x%02x\n",
+                object_get_typename(OBJECT(pdev)), pdev->devfn,
+                vendor, device,
+                pdev->config[0x04], pdev->config[0x05]);
+    }
 
     pcie_sriov_pf_post_load(opaque);
-
-    dump_pci_cfg_brief(pdev, "EXIT");
-
     return 0;
 }
+
 
 const VMStateDescription vmstate_pci_device = {
     .name = "PCIDevice",
