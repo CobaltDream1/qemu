@@ -1193,6 +1193,7 @@ static int vcrypto_pre_save(void *opaque)
     VirtIOCrypto *s = opaque;
     VirtIODevice *vdev = VIRTIO_DEVICE(s);
     int queues = s->multiqueue ? s->max_queues : 1;
+    int i;
 
     CryptoDevBackend *b = s->cryptodev;
     CryptoDevBackendClass *c = NULL;
@@ -1201,13 +1202,23 @@ static int vcrypto_pre_save(void *opaque)
             s->vhost_started, vdev->vhost_started, queues);
 
     /*
-     * Critical: freeze vhost so do_vhost_virtqueue_stop() can call
-     * vhost_get_vring_base() and update last_avail_idx before virtio_save.
+     * IMPORTANT: rely on vdev->vhost_started (virtio core truth),
+     * not s->vhost_started (device-local flag may be stale).
      */
-    if (s->vhost_started) {
+    if (vdev->vhost_started || s->vhost_started) {
         fprintf(stderr, ">>> [pre_save] stopping vhost\n");
         cryptodev_vhost_stop(vdev, queues);
-        s->vhost_started = 0; /* keep our flag consistent */
+        s->vhost_started = 0;
+    }
+
+    /*
+     * Belt-and-suspenders: make virtio queue state self-consistent
+     * even if backend GET_VRING_BASE returns bogus (e.g., 0).
+     */
+    for (i = 0; i < queues; i++) {
+        virtio_queue_restore_last_avail_idx(vdev, i);
+        /* optional but consistent with vhost stop path expectations */
+        virtio_queue_update_used_idx(vdev, i);
     }
 
     if (b) {
@@ -1224,6 +1235,7 @@ static int vcrypto_pre_save(void *opaque)
     fprintf(stderr, ">>> [pre_save] no backend or pre_save not set\n");
     return 0;
 }
+
 
 static int vcrypto_post_load(void *opaque, int version_id)
 {
