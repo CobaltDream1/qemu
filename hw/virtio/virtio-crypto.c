@@ -1246,21 +1246,21 @@ static const VMStateDescription vmstate_virtio_crypto = {
     .name               = "virtio-crypto",
     .version_id         = VIRTIO_CRYPTO_VM_VERSION,
     .minimum_version_id = VIRTIO_CRYPTO_VM_VERSION,
-    .pre_save  = vcrypto_pre_save,
-    .post_load = vcrypto_post_load,
+    .pre_save           = vcrypto_pre_save,
+    .post_load          = vcrypto_post_load,
     .fields = (const VMStateField[]) {
+        /* Migrate VirtIODevice core state: vdev->status, features, queue state, etc. */
+        VMSTATE_VIRTIO_DEVICE,
+
+        /* Your backend-specific migration payload */
         VMSTATE_UINT8 (mstate.status,   VirtIOCrypto),
         VMSTATE_UINT64(mstate.epoch,    VirtIOCrypto),
-
-        /* 显式迁移 blob_len */
         VMSTATE_UINT32(mstate.blob_len, VirtIOCrypto),
-
-        /* 再按 blob_len 分配+迁移 blob */
         VMSTATE_VBUFFER_ALLOC_UINT32(mstate.blob, VirtIOCrypto,
                                      0, NULL, mstate.blob_len),
 
         VMSTATE_END_OF_LIST()
-    }
+    },
 };
 
 
