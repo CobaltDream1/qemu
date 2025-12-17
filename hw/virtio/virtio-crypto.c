@@ -1057,6 +1057,10 @@ static void virtio_crypto_init_config(VirtIODevice *vdev)
     vcrypto->conf.max_size = vcrypto->conf.cryptodev->conf.max_size;
 }
 
+/* Forward declarations (needed because we call these before their definitions) */
+static void virtio_crypto_vhost_status(VirtIOCrypto *c, uint8_t status);
+static void virtio_crypto_vm_state_change(void *opaque, bool running, RunState state);
+
 static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
@@ -1109,6 +1113,10 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
     cryptodev_backend_set_used(vcrypto->cryptodev, true);
 
     /* ---------- Migration (frontend keeps NO vhost-layer mirrors) ---------- */
+    if (!vcrypto->vmstate) {
+    vcrypto->vmstate = qemu_add_vm_change_state_handler(
+                           virtio_crypto_vm_state_change, vcrypto);
+}
 
     /* 初始化精简迁移状态容器（仅软状态/epoch + 后端快照 blob 占位） */
     vcrypto->mstate.status    = vcrypto->status;   /* 若不需要可在 VMState 中去掉 */
@@ -1132,6 +1140,13 @@ static void virtio_crypto_device_unrealize(DeviceState *dev)
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(dev);
     VirtIOCryptoQueue *q;
     int i;
+
+        /* 0) Unregister VM state-change handler ASAP to avoid UAF */
+    if (vcrypto->vmstate) {
+        qemu_del_vm_change_state_handler(vcrypto->vmstate);
+        vcrypto->vmstate = NULL;
+    }
+
 
     /* 1) 迁移资源收尾（注意：不要再手动 vmstate_unregister，见下） */
     // if (vcrypto->migr_blocker) {
@@ -1219,6 +1234,8 @@ static int vcrypto_post_load(void *opaque, int version_id)
     fprintf(stderr,
         "DEBUG: vcrypto_post_load() blob_len=%u\n",
         s->mstate.blob_len);
+    VirtIODevice *vdev = VIRTIO_DEVICE(s);
+    virtio_crypto_vhost_status(s, vdev->status);
     return 0;
 }
 
@@ -1323,6 +1340,22 @@ static int virtio_crypto_set_status(VirtIODevice *vdev, uint8_t status)
 
     virtio_crypto_vhost_status(vcrypto, status);
     return 0;
+}
+
+static void virtio_crypto_vm_state_change(void *opaque, bool running, RunState state)
+{
+    VirtIOCrypto *c = opaque;
+    VirtIODevice *vdev = VIRTIO_DEVICE(c);
+
+    /* We only care about resume on destination (or general resume). */
+    if (!running) {
+        return;
+    }
+
+    /* Re-tick the vhost state machine after VM is really running. */
+    virtio_crypto_vhost_status(c, vdev->status);
+    fprintf(stderr, "vcrypto vm_state_change: running=%d vdev->status=0x%x c->status=0x%x vhost_started=%d\n",
+        running, vdev->status, c->status, c->vhost_started);
 }
 
 static void virtio_crypto_guest_notifier_mask(VirtIODevice *vdev, int idx,

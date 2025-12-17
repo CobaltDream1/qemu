@@ -109,6 +109,7 @@ struct VirtIOCrypto {
     /* migration support */
     VirtIOCryptoMigrateState mstate;  // 保存迁移状态
     Error *migr_blocker;              // 迁移阻断器
+    VMChangeStateEntry *vmstate;
 };
 
 #endif /* QEMU_VIRTIO_CRYPTO_H */
