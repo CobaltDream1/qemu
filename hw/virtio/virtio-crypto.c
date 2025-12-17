@@ -1191,10 +1191,24 @@ static void virtio_crypto_device_unrealize(DeviceState *dev)
 static int vcrypto_pre_save(void *opaque)
 {
     VirtIOCrypto *s = opaque;
+    VirtIODevice *vdev = VIRTIO_DEVICE(s);
+    int queues = s->multiqueue ? s->max_queues : 1;
+
     CryptoDevBackend *b = s->cryptodev;
     CryptoDevBackendClass *c = NULL;
 
-    fprintf(stderr, ">>> [pre_save] entered\n");
+    fprintf(stderr, ">>> [pre_save] entered: s->vhost_started=%d vdev->vhost_started=%d queues=%d\n",
+            s->vhost_started, vdev->vhost_started, queues);
+
+    /*
+     * Critical: freeze vhost so do_vhost_virtqueue_stop() can call
+     * vhost_get_vring_base() and update last_avail_idx before virtio_save.
+     */
+    if (s->vhost_started) {
+        fprintf(stderr, ">>> [pre_save] stopping vhost\n");
+        cryptodev_vhost_stop(vdev, queues);
+        s->vhost_started = 0; /* keep our flag consistent */
+    }
 
     if (b) {
         c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
