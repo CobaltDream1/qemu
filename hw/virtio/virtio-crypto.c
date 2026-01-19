@@ -123,6 +123,8 @@ virtio_crypto_create_sym_session(VirtIOCrypto *vcrypto,
                struct iovec *iov, unsigned int out_num,
                VirtIOCryptoSessionReq *sreq)
 {
+    warn_report("create sym session");
+
     VirtIODevice *vdev = VIRTIO_DEVICE(vcrypto);
     CryptoDevBackendSymSessionInfo *sym_info = &sreq->info.u.sym_sess_info;
     int queue_index;
@@ -345,6 +347,8 @@ out:
 
 static void virtio_crypto_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 {
+    warn_report("crypto handle ctrl");
+
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(vdev);
     struct virtio_crypto_op_ctrl_req ctrl;
     VirtQueueElement *elem;
@@ -1066,6 +1070,7 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(dev);
     int i;
+    warn_report( "crypto device realize\n");
 
     vcrypto->cryptodev = vcrypto->conf.cryptodev;
     if (!vcrypto->cryptodev) {
@@ -1346,7 +1351,6 @@ static void virtio_crypto_vhost_status(VirtIOCrypto *c, uint8_t status)
 
     if (!c->vhost_started) {
         int r;
-
         c->vhost_started = 1;
         r = cryptodev_vhost_start(vdev, queues);
         if (r < 0) {

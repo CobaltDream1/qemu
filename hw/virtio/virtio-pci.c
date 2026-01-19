@@ -267,7 +267,10 @@ static const VirtIOPCIIDInfo virtio_pci_id_info[] = {
         .vdev_id = VIRTIO_ID_RNG,
         .trans_devid = PCI_DEVICE_ID_VIRTIO_RNG,
         .class_id = PCI_CLASS_OTHERS,
-    },
+    }, {
+        .vdev_id = VIRTIO_ID_COMP,
+        .class_id = PCI_CLASS_OTHERS,
+    }
 };
 
 static const VirtIOPCIIDInfo *virtio_pci_get_id_info(uint16_t vdev_id)
@@ -421,6 +424,7 @@ static void virtio_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         if (!(val & VIRTIO_CONFIG_S_DRIVER_OK)) {
             virtio_pci_stop_ioeventfd(proxy);
         }
+    warn_report("%s %d", __FUNCTION__, __LINE__);
 
         virtio_set_status(vdev, val & 0xFF);
 
@@ -644,6 +648,7 @@ void virtio_address_space_write(VirtIOPCIProxy *proxy, hwaddr addr,
 {
     uint64_t val;
     MemoryRegion *mr;
+    warn_report("%s %d", __FUNCTION__, __LINE__);
 
     /* address_space_* APIs assume an aligned address.
      * As address is under guest control, handle illegal values.
@@ -767,6 +772,7 @@ static void virtio_write_config(PCIDevice *pci_dev, uint32_t address,
         if (!(pci_dev->config[PCI_COMMAND] & PCI_COMMAND_MASTER)) {
             virtio_set_disabled(vdev, true);
             virtio_pci_stop_ioeventfd(proxy);
+    warn_report("%s %d", __FUNCTION__, __LINE__);
             virtio_set_status(vdev, vdev->status & ~VIRTIO_CONFIG_S_DRIVER_OK);
         } else {
             virtio_set_disabled(vdev, false);
@@ -1714,6 +1720,7 @@ static uint64_t virtio_pci_notify_read(void *opaque, hwaddr addr,
 static void virtio_pci_notify_write(void *opaque, hwaddr addr,
                                     uint64_t val, unsigned size)
 {
+    warn_report("virtio_pci_notify_write %d %p %p", __LINE__, (void*)addr, (void *)val);
     VirtIOPCIProxy *proxy = opaque;
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
 

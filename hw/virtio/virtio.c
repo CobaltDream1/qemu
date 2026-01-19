@@ -194,7 +194,9 @@ const char *virtio_device_names[] = {
     [VIRTIO_ID_PARAM_SERV] = "virtio-param-serv",
     [VIRTIO_ID_AUDIO_POLICY] = "virtio-audio-pol",
     [VIRTIO_ID_BT] = "virtio-bluetooth",
-    [VIRTIO_ID_GPIO] = "virtio-gpio"
+    [VIRTIO_ID_GPIO] = "virtio-gpio",
+    [VIRTIO_ID_COMP] = "virtio-comp"
+
 };
 
 static const char *virtio_id_to_name(uint16_t device_id)
@@ -2240,6 +2242,7 @@ static int virtio_validate_features(VirtIODevice *vdev)
 
 int virtio_set_status(VirtIODevice *vdev, uint8_t val)
 {
+    warn_report("%s %d", __FUNCTION__, __LINE__);
     VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
     trace_virtio_set_status(vdev, val);
     int ret = 0;
@@ -3156,6 +3159,7 @@ void virtio_reset(void *opaque)
     VirtIODevice *vdev = opaque;
     VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
     int i;
+    warn_report("%s %d", __FUNCTION__, __LINE__);
 
     virtio_set_status(vdev, 0);
     if (current_cpu) {
@@ -3446,6 +3450,7 @@ void virtio_cleanup(VirtIODevice *vdev)
 
 static int virtio_vmstate_change(void *opaque, bool running, RunState state)
 {
+    warn_report("%s %d", __FUNCTION__, __LINE__);
     VirtIODevice *vdev = opaque;
     BusState *qbus = qdev_get_parent_bus(DEVICE(vdev));
     VirtioBusClass *k = VIRTIO_BUS_GET_CLASS(qbus);

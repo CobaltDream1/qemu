@@ -2011,7 +2011,7 @@ static int vhost_dev_set_vring_enable(struct vhost_dev *hdev, int enable)
 int vhost_dev_start(struct vhost_dev *hdev, VirtIODevice *vdev, bool vrings)
 {
     int i, r;
-
+    warn_report("vhost_dev_start.");
     /* should only be called after backend is connected */
     assert(hdev->vhost_ops);
 

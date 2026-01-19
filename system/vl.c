@@ -1966,6 +1966,10 @@ static bool object_create_early(const char *type)
     if (g_str_equal(type, "cryptodev-vhost-user")) {
         return false;
     }
+
+    if (g_str_equal(type, "compressdev-vhost-user")) {
+        return false;
+    }
 #endif
 
     /* Reason: vhost-user-blk-server property "node-name" */
