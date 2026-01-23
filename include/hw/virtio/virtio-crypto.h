@@ -100,7 +100,6 @@ struct VirtIOCrypto {
 
     uint32_t max_queues;
     uint32_t status;
-
     int multiqueue;
     uint32_t curr_queues;
     size_t config_size;
@@ -110,6 +109,7 @@ struct VirtIOCrypto {
     VirtIOCryptoMigrateState mstate;  // 保存迁移状态
     Error *migr_blocker;              // 迁移阻断器
     VMChangeStateEntry *vmstate;
+    bool x_frozen;
 };
 
 #endif /* QEMU_VIRTIO_CRYPTO_H */

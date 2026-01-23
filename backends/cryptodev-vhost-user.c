@@ -66,6 +66,7 @@ struct CryptoDevBackendVhostUser {
     uint8_t  *mig_blob;
     uint32_t  mig_blob_len;
     uint64_t  mig_epoch;   /* 可选：从 TLV 解析出的世代/计数 */
+    bool     mig_frozen;  /* whether backend is currently frozen by us */
 };
 
 #ifndef VC_SNAP_MAGIC
@@ -217,8 +218,8 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
     *len   = 0;
     *epoch = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
 
-    /* 0) FREEZE：让后端把 inflight 请求 drain 掉 */
-    r = vuc_send_simple_chr(&s->chr, VHOST_USER_CRYPTO_FREEZE);
+    /* 0) FREEZE (only once): drain inflight before exporting state */
+    r = cryptodev_vhost_user_freeze(backend);
     if (r < 0) {
         return r;
     }
@@ -366,11 +367,12 @@ static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
         goto out;
     }
 
-    /*
-     * 4) （以后你可以在这里加 THAW）：
-     *    r = vuc_send_simple_chr(&s->chr, VHOST_USER_CRYPTO_THAW);
-     *    if (r < 0) { ... }
-     */
+        /* ✅ 4) LOAD 完成后立刻 THAW，让设备恢复服务 */
+    r = cryptodev_vhost_user_thaw(backend);
+    if (r < 0) {
+        goto out;
+    }
+
 
     r = 0;
 
@@ -497,6 +499,7 @@ static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
         break;
     case CHR_EVENT_CLOSED:
         b->ready = false;
+        s->mig_frozen = false;   /* ✅ 断链时本地状态回到未冻结 */
         cryptodev_vhost_user_stop(queues, s);
         break;
     case CHR_EVENT_BREAK:
@@ -517,6 +520,8 @@ static void cryptodev_vhost_user_init(
     CryptoDevBackendClient *cc;
     CryptoDevBackendVhostUser *s =
                       CRYPTODEV_BACKEND_VHOST_USER(backend);
+                    
+    s->mig_frozen = false;
 
     chr = cryptodev_vhost_claim_chardev(s, &local_err);
     if (local_err) {
@@ -722,6 +727,49 @@ static void cryptodev_vhost_user_finalize(Object *obj)
     g_free(s->mig_blob); 
 }
 
+static int cryptodev_vhost_user_freeze(CryptoDevBackend *backend)
+{
+    CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
+    int r;
+
+    if (!qemu_chr_fe_backend_connected(&s->chr)) {
+        return -ENOTCONN;
+    }
+
+    /* ✅ 关键：已经冻过就直接返回，避免重复 FREEZE */
+    if (s->mig_frozen) {
+        return 0;
+    }
+
+    r = vuc_send_simple_chr(&s->chr, VHOST_USER_CRYPTO_FREEZE);
+    if (r == 0) {
+        s->mig_frozen = true;   /* ✅ 成功后置位 */
+    }
+    return r;
+}
+
+static int cryptodev_vhost_user_thaw(CryptoDevBackend *backend)
+{
+    CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
+    int r;
+
+    if (!qemu_chr_fe_backend_connected(&s->chr)) {
+        return -ENOTCONN;
+    }
+
+    /* ✅ 幂等：本来就没冻就不需要发 THAW */
+    if (!s->mig_frozen) {
+        return 0;
+    }
+
+    r = vuc_send_simple_chr(&s->chr, VHOST_USER_CRYPTO_THAW);
+    if (r == 0) {
+        s->mig_frozen = false;  /* ✅ 成功后清位 */
+    }
+    return r;
+}
+
+
 static void
 cryptodev_vhost_user_class_init(ObjectClass *oc, const void *data)
 {
@@ -733,6 +781,11 @@ cryptodev_vhost_user_class_init(ObjectClass *oc, const void *data)
     bc->close_session = cryptodev_vhost_user_close_session;
     bc->pre_save = cryptodev_vhost_user_pre_save;   /* <— 新增 */
     bc->post_load = cryptodev_vhost_user_post_load; /* <— 新增 */
+
+    /* ✅ 新增：给 virtio-crypto 的 x-freeze 用 */
+    bc->freeze = cryptodev_vhost_user_freeze;
+    bc->thaw   = cryptodev_vhost_user_thaw;
+
     bc->do_op = NULL;
 
     object_class_property_add_str(oc, "chardev",

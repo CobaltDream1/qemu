@@ -1448,6 +1448,49 @@ static struct vhost_dev *virtio_crypto_get_vhost(VirtIODevice *vdev)
     return &vhost_crypto->dev;
 }
 
+static void vcrypto_set_x_freeze(Object *obj, bool value, Error **errp)
+{
+    VirtIOCrypto *s = VIRTIO_CRYPTO(obj);
+
+    if (!s->conf.cryptodev) {
+        error_setg(errp, "virtio-crypto: no cryptodev backend");
+        return;
+    }
+
+    CryptoDevBackend *b = s->conf.cryptodev;
+    CryptoDevBackendClass *k = CRYPTODEV_BACKEND_GET_CLASS(b);
+
+    if (value) {
+        if (!k->freeze) {
+            error_setg(errp, "virtio-crypto: backend freeze() not implemented");
+            return;
+        }
+        int rc = k->freeze(b);
+        if (rc < 0) {
+            error_setg(errp, "virtio-crypto: backend freeze failed (%d)", rc);
+            return;
+        }
+    } else {
+        if (!k->thaw) {
+            error_setg(errp, "virtio-crypto: backend thaw() not implemented");
+            return;
+        }
+        int rc = k->thaw(b);
+        if (rc < 0) {
+            error_setg(errp, "virtio-crypto: backend thaw failed (%d)", rc);
+            return;
+        }
+    }
+
+    s->x_frozen = value;
+}
+
+static bool vcrypto_get_x_freeze(Object *obj, Error **errp)
+{
+    VirtIOCrypto *s = VIRTIO_CRYPTO(obj);
+    return s->x_frozen;
+}
+
 static void virtio_crypto_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1465,6 +1508,9 @@ static void virtio_crypto_class_init(ObjectClass *klass, const void *data)
     vdc->guest_notifier_mask = virtio_crypto_guest_notifier_mask;
     vdc->guest_notifier_pending = virtio_crypto_guest_notifier_pending;
     vdc->get_vhost = virtio_crypto_get_vhost;
+    object_class_property_add_bool(klass, "x-freeze",
+                                   vcrypto_get_x_freeze,
+                                   vcrypto_set_x_freeze);
 }
 
 static void virtio_crypto_instance_init(Object *obj)
@@ -1476,6 +1522,7 @@ static void virtio_crypto_instance_init(Object *obj)
      * Can be overridden with virtio_crypto_set_config_size.
      */
     vcrypto->config_size = sizeof(struct virtio_crypto_config);
+    vcrypto->x_frozen = false;  /* ✅ 新增 */
 }
 
 static const TypeInfo virtio_crypto_info = {
