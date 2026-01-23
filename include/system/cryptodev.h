@@ -38,6 +38,12 @@
  */
 
 #define TYPE_CRYPTODEV_BACKEND "cryptodev-backend"
+#define TYPE_CRYPTODEV_BACKEND_VHOST_USER "cryptodev-vhost-user"
+
+typedef struct CryptoDevBackend CryptoDevBackend;
+int cryptodev_vhost_user_freeze(CryptoDevBackend *backend);
+int cryptodev_vhost_user_thaw(CryptoDevBackend *backend);
+
 
 OBJECT_DECLARE_TYPE(CryptoDevBackend, CryptoDevBackendClass,
                     CRYPTODEV_BACKEND)

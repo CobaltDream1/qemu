@@ -29,6 +29,9 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 
+int cryptodev_vhost_user_freeze(CryptoDevBackend *backend);
+int cryptodev_vhost_user_thaw(CryptoDevBackend *backend);
+
 #define VIRTIO_CRYPTO_VM_VERSION 1
 
 typedef struct VirtIOCryptoSessionReq {
@@ -1458,29 +1461,32 @@ static void vcrypto_set_x_freeze(Object *obj, bool value, Error **errp)
     }
 
     CryptoDevBackend *b = s->conf.cryptodev;
-    CryptoDevBackendClass *k = CRYPTODEV_BACKEND_GET_CLASS(b);
+    int rc;
+
+    if (!b) {
+        error_setg(errp, "cryptodev backend not set");
+        return;
+    }
+
+    /* 方案A：只支持 vhost-user crypto backend；其他 backend 直接报不支持 */
+    if (!object_dynamic_cast(OBJECT(b), QCRYPTODEV_BACKEND_TYPE_VHOST_USER)) {
+        error_setg(errp, "x-freeze only supported for vhost-user cryptodev backend");
+        return;
+    }
 
     if (value) {
-        if (!k->freeze) {
-            error_setg(errp, "virtio-crypto: backend freeze() not implemented");
-            return;
-        }
-        int rc = k->freeze(b);
-        if (rc < 0) {
-            error_setg(errp, "virtio-crypto: backend freeze failed (%d)", rc);
-            return;
-        }
+        rc = cryptodev_vhost_user_freeze(b);
     } else {
-        if (!k->thaw) {
-            error_setg(errp, "virtio-crypto: backend thaw() not implemented");
-            return;
-        }
-        int rc = k->thaw(b);
-        if (rc < 0) {
-            error_setg(errp, "virtio-crypto: backend thaw failed (%d)", rc);
-            return;
-        }
+        rc = cryptodev_vhost_user_thaw(b);
     }
+
+    if (rc < 0) {
+        error_setg_errno(errp, -rc, "x-freeze operation failed");
+        return;
+    }
+
+    /* 你如果有保存属性值的字段，就在这里更新，比如：vc->x_freeze = value; */
+
 
     s->x_frozen = value;
 }

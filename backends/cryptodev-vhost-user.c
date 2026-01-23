@@ -52,7 +52,7 @@
 
 OBJECT_DECLARE_SIMPLE_TYPE(CryptoDevBackendVhostUser, CRYPTODEV_BACKEND_VHOST_USER)
 
-
+#include "system/cryptodev.h"
 struct CryptoDevBackendVhostUser {
     CryptoDevBackend parent_obj;
 
@@ -727,7 +727,7 @@ static void cryptodev_vhost_user_finalize(Object *obj)
     g_free(s->mig_blob); 
 }
 
-static int cryptodev_vhost_user_freeze(CryptoDevBackend *backend)
+ int cryptodev_vhost_user_freeze(CryptoDevBackend *backend)
 {
     CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
     int r;
@@ -748,7 +748,7 @@ static int cryptodev_vhost_user_freeze(CryptoDevBackend *backend)
     return r;
 }
 
-static int cryptodev_vhost_user_thaw(CryptoDevBackend *backend)
+int cryptodev_vhost_user_thaw(CryptoDevBackend *backend)
 {
     CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
     int r;
@@ -781,10 +781,6 @@ cryptodev_vhost_user_class_init(ObjectClass *oc, const void *data)
     bc->close_session = cryptodev_vhost_user_close_session;
     bc->pre_save = cryptodev_vhost_user_pre_save;   /* <— 新增 */
     bc->post_load = cryptodev_vhost_user_post_load; /* <— 新增 */
-
-    /* ✅ 新增：给 virtio-crypto 的 x-freeze 用 */
-    bc->freeze = cryptodev_vhost_user_freeze;
-    bc->thaw   = cryptodev_vhost_user_thaw;
 
     bc->do_op = NULL;
 
