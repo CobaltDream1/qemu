@@ -1249,32 +1249,44 @@ static int vcrypto_post_load(void *opaque, int version_id)
 {
     VirtIOCrypto *s = opaque;
     CryptoDevBackend *b = s->cryptodev;
-    CryptoDevBackendClass *c = NULL;
+    CryptoDevBackendClass *c =
+        b ? CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b))) : NULL;
 
-    fprintf(stderr, ">>> [post_load] entered, version=%d\n", version_id);
-
-    if (b) {
-        c = CRYPTODEV_BACKEND_CLASS(object_get_class(OBJECT(b)));
-    }
+    int r = 0;
 
     if (c && c->post_load) {
-        int r = c->post_load(b, s->mstate.blob, s->mstate.blob_len, s->mstate.epoch);
-        fprintf(stderr, ">>> [post_load] called backend, blob_len=%u, epoch=%lu, ret=%d\n",
-                s->mstate.blob_len, s->mstate.epoch, r);
-        return r;
+        r = c->post_load(b, s->mstate.blob, s->mstate.blob_len, s->mstate.epoch);
     }
 
-    fprintf(stderr, ">>> [post_load] no backend or post_load not set\n");
-    fprintf(stderr,
-        "DEBUG: vcrypto_post_load() blob_len=%u\n",
-        s->mstate.blob_len);
+    /* 恢复/刷新软状态（至少确保 status 一致） */
+    s->status = s->mstate.status;
+
+    /* blob 用完释放，避免泄漏/复用脏数据 */
+    g_free(s->mstate.blob);
+    s->mstate.blob = NULL;
+    s->mstate.blob_len = 0;
+
+    /* ✅ 关键：目标端必须重新走 vhost_status，把队列/后端拉起来 */
     VirtIODevice *vdev = VIRTIO_DEVICE(s);
-    virtio_crypto_vhost_status(s, vdev->status);
+
+    /* ✅ 必须恢复内部 status，否则 started 条件永远可能是 false */
+    s->status = s->mstate.status;
+
+    /* ✅ 清掉标志位，允许后续重新 start */
+    s->vhost_started = 0;
+    vdev->vhost_started = 0;
+
+    /*
+    * ✅ 不要在 post_load 阶段无条件 start/stop。
+    * 只有 VM 真正 running 了才尝试启动 vhost。
+    * （如果你的 QEMU 没有 vm_running 字段，就用 runstate/vmstate-change 回调去做）
+    */
+    if (vdev->vm_running) {
+        virtio_crypto_vhost_status(s, vdev->status);
+    }
+
     return 0;
 }
-
-
-
 
 static const VMStateDescription vmstate_virtio_crypto = {
     .name               = "virtio-crypto",
