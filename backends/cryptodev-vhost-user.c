@@ -323,26 +323,26 @@ static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
 {
     CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
 
-    /* 允许没有状态：不要 return -EINVAL，否则目标端直接失败或进入怪状态 */
+    /* 允许 len==0：表示没有可恢复内容 */
     g_free(s->mig_blob);
     s->mig_blob = NULL;
     s->mig_blob_len = 0;
 
     if (blob && len) {
-        /* 防御：限制最大输入，避免异常 len */
-        if (len > (64u << 20)) {  /* 64MB */
+        /* 你原来的上限防御可以保留 */
+        if (len > (64u << 20)) {
             return -EINVAL;
         }
         s->mig_blob = g_memdup2(blob, len);
         s->mig_blob_len = len;
+        s->mig_epoch = epoch;
+        s->mig_restore_pending = true;
+    } else {
+        s->mig_epoch = epoch;
+        s->mig_restore_pending = false;
     }
 
-    s->mig_epoch = epoch;
-
-    /* 关键：post_load 阶段只标记 pending，等 OPENED/start 后再做真正恢复 */
-    s->mig_restore_pending = (s->mig_blob_len != 0);
-
-    /* 注意：这里不要 thaw；也不要依赖 s->opened */
+    /* ✅ 这里绝对不要：send LOAD_STATE / write blob / wait reply / thaw */
     return 0;
 }
 
@@ -445,6 +445,56 @@ cryptodev_vhost_claim_chardev(CryptoDevBackendVhostUser *s,
     return chr;
 }
 
+static void cryptodev_vhost_user_try_restore(CryptoDevBackendVhostUser *s)
+{
+    int sv[2] = { -1, -1 };
+    int r;
+
+    if (!s->mig_restore_pending || !s->mig_blob_len) {
+        return;
+    }
+    if (!s->opened) { /* 你的结构里应该有 opened */
+        return;
+    }
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+        error_report("cryptodev-vhost-user: socketpair failed: %s", strerror(errno));
+        return;
+    }
+
+    r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
+    close(sv[1]); sv[1] = -1;
+    if (r < 0) {
+        error_report("cryptodev-vhost-user: send LOAD_STATE failed");
+        goto out;
+    }
+
+    r = vuc_write_full(sv[0], s->mig_blob, s->mig_blob_len);
+    if (r) {
+        error_report("cryptodev-vhost-user: write blob failed");
+        goto out;
+    }
+
+    r = vuc_wait_reply_chr(&s->chr);
+    if (r < 0) {
+        error_report("cryptodev-vhost-user: wait reply failed");
+        goto out;
+    }
+
+    r = cryptodev_vhost_user_thaw(CRYPTODEV_BACKEND(s));
+    if (r < 0) {
+        error_report("cryptodev-vhost-user: thaw failed");
+        goto out;
+    }
+
+    s->mig_restore_pending = false;
+
+out:
+    if (sv[0] >= 0) close(sv[0]);
+    if (sv[1] >= 0) close(sv[1]);
+}
+
+
 static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
 {
     CryptoDevBackendVhostUser *s = opaque;
@@ -460,50 +510,8 @@ static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
         }
         b->ready = true;
 
-        /* 延迟恢复：在 OPENED + start 之后再 LOAD_STATE + THAW */
-        if (s->mig_restore_pending && s->mig_blob_len) {
-            int sv[2] = { -1, -1 };
-            int r = -1;
-
-            if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
-                error_report("cryptodev-vhost-user: socketpair failed: %s", strerror(errno));
-                break; /* 保持 pending，下次 OPENED 还能再试 */
-            }
-
-            r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
-            close(sv[1]);
-            sv[1] = -1;
-            if (r < 0) {
-                error_report("cryptodev-vhost-user: send LOAD_STATE failed");
-                goto restore_out;
-            }
-
-            r = vuc_write_full(sv[0], s->mig_blob, s->mig_blob_len);
-            if (r) {
-                error_report("cryptodev-vhost-user: write blob failed");
-                goto restore_out;
-            }
-
-            r = vuc_wait_reply_chr(&s->chr);
-            if (r < 0) {
-                error_report("cryptodev-vhost-user: wait reply failed");
-                goto restore_out;
-            }
-
-            r = cryptodev_vhost_user_thaw(CRYPTODEV_BACKEND(s));
-            if (r < 0) {
-                error_report("cryptodev-vhost-user: thaw failed");
-                goto restore_out;
-            }
-
-            /* 成功：清 pending，避免重复恢复 */
-            s->mig_restore_pending = false;
-
-    restore_out:
-            if (sv[0] >= 0) close(sv[0]);
-            if (sv[1] >= 0) close(sv[1]);
-        }
-
+        /* ✅ start 之后再恢复 */
+        cryptodev_vhost_user_try_restore(s);
         break;
     }
     case CHR_EVENT_CLOSED:
