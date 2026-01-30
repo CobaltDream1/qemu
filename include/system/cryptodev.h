@@ -457,8 +457,10 @@ void cryptodev_backend_set_ready(CryptoDevBackend *backend, bool ready);
  */
 bool cryptodev_backend_is_ready(CryptoDevBackend *backend);
 
-#endif /* CRYPTODEV_H */
-
 /* vhost-user crypto backend migration helpers */
 void cryptodev_vhost_user_try_restore(CryptoDevBackend *backend);
 bool cryptodev_vhost_user_has_pending(CryptoDevBackend *backend);
+
+#endif /* CRYPTODEV_H */
+
+

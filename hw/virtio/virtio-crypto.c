@@ -29,9 +29,6 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 
-int cryptodev_vhost_user_freeze(CryptoDevBackend *backend);
-int cryptodev_vhost_user_thaw(CryptoDevBackend *backend);
-
 #define VIRTIO_CRYPTO_VM_VERSION 1
 
 typedef struct VirtIOCryptoSessionReq {

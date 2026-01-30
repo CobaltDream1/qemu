@@ -495,7 +495,7 @@ out:
     return r;
 }
 
-sstatic void cryptodev_vhost_user_try_restore_internal(CryptoDevBackend *backend)
+static void cryptodev_vhost_user_try_restore_internal(CryptoDevBackend *backend)
 {
     CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
 
@@ -528,7 +528,7 @@ void cryptodev_vhost_user_try_restore(CryptoDevBackend *backend)
         return;
     }
     CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
-    cryptodev_vhost_user_try_restore_internal(s);
+    cryptodev_vhost_user_try_restore_internal(backend);  
 }
 
 
