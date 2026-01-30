@@ -445,27 +445,70 @@ cryptodev_vhost_claim_chardev(CryptoDevBackendVhostUser *s,
     return chr;
 }
 
-static void cryptodev_vhost_user_try_restore_internal(CryptoDevBackendVhostUser *s)
+static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
+                                          const uint8_t *blob, uint32_t len,
+                                          uint64_t epoch)
 {
-    if (!s->opened) {
-        return;
+    CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
+    int sv[2] = { -1, -1 };
+    int r = -1;
+
+    if (!blob || !len) {
+        return -EINVAL;
     }
+    if (len > (64u << 20)) {
+        return -EINVAL;
+    }
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+        return -errno;
+    }
+
+    r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
+    close(sv[1]);
+    sv[1] = -1;
+    if (r < 0) {
+        goto out;
+    }
+
+    r = vuc_write_full(sv[0], blob, len);
+    if (r) {
+        r = -EIO;
+        goto out;
+    }
+
+    r = vuc_wait_reply_chr(&s->chr);
+    if (r < 0) {
+        goto out;
+    }
+
+    r = cryptodev_vhost_user_thaw(backend);
+    if (r < 0) {
+        goto out;
+    }
+
+    r = 0;
+
+out:
+    if (sv[0] >= 0) close(sv[0]);
+    if (sv[1] >= 0) close(sv[1]);
+    return r;
+}
+
+sstatic void cryptodev_vhost_user_try_restore_internal(CryptoDevBackend *backend)
+{
+    CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
+
     if (!s->mig_restore_pending || s->mig_blob_len == 0) {
         return;
     }
-
-    if (cryptodev_vhost_user_send_load_state(s->mig_blob, s->mig_blob_len,
-                                            s->mig_epoch, s) < 0) {
-        error_report("cryptodev-vhost-user: deferred LOAD_STATE failed");
+    if (!s->opened || !backend->ready) {
         return;
     }
 
-    if (cryptodev_vhost_user_thaw(CRYPTODEV_BACKEND(s)) < 0) {
-        error_report("cryptodev-vhost-user: deferred THAW failed");
-        return;
+    if (cryptodev_vhost_user_do_restore(backend, s->mig_blob, s->mig_blob_len, s->mig_epoch) == 0) {
+        s->mig_restore_pending = false;
     }
-
-    s->mig_restore_pending = false;
 }
 
 bool cryptodev_vhost_user_has_pending(CryptoDevBackend *backend)
@@ -500,20 +543,29 @@ static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
 
     switch (event) {
     case CHR_EVENT_OPENED:
+        s->opened = true;
         if (cryptodev_vhost_user_start(queues, s) < 0) {
             exit(1);
         }
         b->ready = true;
+
+        /* 如果你要“OPENED/start 后再恢复”，就在这里触发 try_restore */
+        cryptodev_vhost_user_try_restore(b);
         break;
+
     case CHR_EVENT_CLOSED:
+        s->opened = false;
         b->ready = false;
-        s->mig_frozen = false;   /* ✅ 断链时本地状态回到未冻结 */
         cryptodev_vhost_user_stop(queues, s);
+        /* 注意：不要把 mig_restore_pending 清掉，断线重连还要靠它恢复 */
         break;
+
     case CHR_EVENT_BREAK:
     case CHR_EVENT_MUX_IN:
     case CHR_EVENT_MUX_OUT:
-        /* Ignore */
+        break;
+
+    default:
         break;
     }
 }

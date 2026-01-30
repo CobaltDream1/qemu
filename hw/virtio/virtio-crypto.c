@@ -1404,26 +1404,23 @@ static int virtio_crypto_set_status(VirtIODevice *vdev, uint8_t status)
 {
     VirtIOCrypto *s = VIRTIO_CRYPTO(vdev);
 
-    /* 记录下来，给迁移/调试用（你 VMState 里有 mstate.status 的话也更新它） */
-    s->mstate.status = status;
-
-    /* 核心：状态机驱动 vhost start/stop */
+    /* 保持你原来的 vhost 状态机驱动 */
     virtio_crypto_vhost_status(s, status);
 
     /*
-     * 再补一枪：当 DRIVER_OK 到来时，如果 vhost 刚刚被 start，
-     * 就尝试触发一次“延迟恢复”（只会成功一次）。
-     *
-     * 注意：virtio_crypto_started() 里还有 vm_running 条件，
-     * 所以如果此时 vm 还没 running，这里可能什么也不发生，
-     * 但没关系，我们会在 vm_state_change 里再触发一次（见下面第 2 点）。
+     * 关键：当 guest 到 DRIVER_OK，且后端存在 pending，则触发一次 restore
+     * 注意：cryptodev_vhost_user_try_restore() 内部会检查类型/ready/opened/pending，
+     * 不会对其他后端产生副作用。
      */
     if (status & VIRTIO_CONFIG_S_DRIVER_OK) {
-        vcrypto_try_restore_after_vhost_started(s);
+        if (cryptodev_vhost_user_has_pending(s->cryptodev)) {
+            cryptodev_vhost_user_try_restore(s->cryptodev);
+        }
     }
 
     return 0;
 }
+
 
 
 static void virtio_crypto_vm_state_change(void *opaque, bool running, RunState state)
