@@ -1307,6 +1307,19 @@ static int vhost_user_get_vring_base(struct vhost_dev *dev,
                                      struct vhost_vring_state *ring)
 {
     int ret;
+    static bool crypto_frozen_once;
+        if (!crypto_frozen_once) {
+            VhostUserMsg fmsg = {
+                .hdr.request = VHOST_USER_CRYPTO_FREEZE,
+                .hdr.flags   = VHOST_USER_VERSION,
+                .hdr.size    = 0,
+            };
+            int fr = vhost_user_write(dev, &fmsg, NULL, 0);
+            if (fr < 0) {
+                return fr;
+            }
+            crypto_frozen_once = true;
+        }
     VhostUserMsg msg = {
         .hdr.request = VHOST_USER_GET_VRING_BASE,
         .hdr.flags = VHOST_USER_VERSION,
