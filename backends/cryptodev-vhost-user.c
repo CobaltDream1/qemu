@@ -67,6 +67,8 @@ struct CryptoDevBackendVhostUser {
     uint32_t  mig_blob_len;
     uint64_t  mig_epoch;   /* 可选：从 TLV 解析出的世代/计数 */
     bool     mig_frozen;  /* whether backend is currently frozen by us */
+    bool mig_restore_pending;   /* ✅ post_load 收到状态后，等待在 OPENED/start 后再恢复 */
+
 };
 
 #ifndef VC_SNAP_MAGIC
@@ -320,69 +322,30 @@ static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
                                           uint64_t epoch)
 {
     CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
-    int sv[2] = { -1, -1 };
-    int r = -1;
 
-    if (!blob || !len) {
-        return -EINVAL;
-    }
-    /* 防御：限制最大输入，避免后端被异常 len 撞死（可按需调整上限） */
-    if (len > (64u << 20)) {  /* 64MB */
-        return -EINVAL;
-    }
+    /* 允许没有状态：不要 return -EINVAL，否则目标端直接失败或进入怪状态 */
+    g_free(s->mig_blob);
+    s->mig_blob = NULL;
+    s->mig_blob_len = 0;
 
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
-        return -errno;
-    }
-
-    /*
-     * 1) 通过 chardev 发送 LOAD_STATE，并附带 sv[1] 给后端。
-     *    send_with_fd_chr 只负责 send，不在这里等 ACK。
-     */
-    r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
-    /* QEMU 不再使用写端 sv[1]，立刻关闭避免泄漏 */
-    close(sv[1]);
-    sv[1] = -1;
-    if (r < 0) {
-        goto out;
+    if (blob && len) {
+        /* 防御：限制最大输入，避免异常 len */
+        if (len > (64u << 20)) {  /* 64MB */
+            return -EINVAL;
+        }
+        s->mig_blob = g_memdup2(blob, len);
+        s->mig_blob_len = len;
     }
 
-    /*
-     * 2) 把 VMState 的 blob 通过 sv[0] 写给后端：
-     *    DPDK vhost_crypto_load_state() 在 fd 上 read 完全部 TLV 后返回。
-     */
-    r = vuc_write_full(sv[0], blob, len);
-    if (r) {                  /* 非 0 说明写失败/被对端中断 */
-        r = -EIO;
-        goto out;
-    }
+    s->mig_epoch = epoch;
 
-    /*
-     * 3) 写完数据后，再从 vhost 控制通道等一次 ACK，
-     *    确认 vhost_crypto_load_state() 在 DPDK 侧执行成功。
-     *    这一步对应 send_with_fd_chr 打上 NEED_REPLY 触发的 reply。
-     */
-    r = vuc_wait_reply_chr(&s->chr);
-    if (r < 0) {
-        goto out;
-    }
+    /* 关键：post_load 阶段只标记 pending，等 OPENED/start 后再做真正恢复 */
+    s->mig_restore_pending = (s->mig_blob_len != 0);
 
-        /* ✅ 4) LOAD 完成后立刻 THAW，让设备恢复服务 */
-    r = cryptodev_vhost_user_thaw(backend);
-    if (r < 0) {
-        goto out;
-    }
-
-
-    r = 0;
-
-out:
-    if (sv[0] >= 0)
-        close(sv[0]);
-    if (sv[1] >= 0)
-        close(sv[1]);
-    return r;
+    /* 注意：这里不要 thaw；也不要依赖 s->opened */
+    return 0;
 }
+
 static int
 cryptodev_vhost_user_running(
              CryptoDevBackendVhost *crypto)
@@ -491,12 +454,58 @@ static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
     assert(queues < MAX_CRYPTO_QUEUE_NUM);
 
     switch (event) {
-    case CHR_EVENT_OPENED:
+    case CHR_EVENT_OPENED: {
         if (cryptodev_vhost_user_start(queues, s) < 0) {
             exit(1);
         }
         b->ready = true;
+
+        /* 延迟恢复：在 OPENED + start 之后再 LOAD_STATE + THAW */
+        if (s->mig_restore_pending && s->mig_blob_len) {
+            int sv[2] = { -1, -1 };
+            int r = -1;
+
+            if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+                error_report("cryptodev-vhost-user: socketpair failed: %s", strerror(errno));
+                break; /* 保持 pending，下次 OPENED 还能再试 */
+            }
+
+            r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
+            close(sv[1]);
+            sv[1] = -1;
+            if (r < 0) {
+                error_report("cryptodev-vhost-user: send LOAD_STATE failed");
+                goto restore_out;
+            }
+
+            r = vuc_write_full(sv[0], s->mig_blob, s->mig_blob_len);
+            if (r) {
+                error_report("cryptodev-vhost-user: write blob failed");
+                goto restore_out;
+            }
+
+            r = vuc_wait_reply_chr(&s->chr);
+            if (r < 0) {
+                error_report("cryptodev-vhost-user: wait reply failed");
+                goto restore_out;
+            }
+
+            r = cryptodev_vhost_user_thaw(CRYPTODEV_BACKEND(s));
+            if (r < 0) {
+                error_report("cryptodev-vhost-user: thaw failed");
+                goto restore_out;
+            }
+
+            /* 成功：清 pending，避免重复恢复 */
+            s->mig_restore_pending = false;
+
+    restore_out:
+            if (sv[0] >= 0) close(sv[0]);
+            if (sv[1] >= 0) close(sv[1]);
+        }
+
         break;
+    }
     case CHR_EVENT_CLOSED:
         b->ready = false;
         s->mig_frozen = false;   /* ✅ 断链时本地状态回到未冻结 */
