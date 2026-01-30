@@ -1384,33 +1384,21 @@ static void vcrypto_try_restore_after_vhost_started(VirtIOCrypto *s)
         return;
     }
 
-    /* 只处理 vhost-user 后端 */
+    /* 只在 DRIVER_OK 之后尝试恢复（避免太早触发 session configure） */
+    if (!(VIRTIO_DEVICE(s)->status & VIRTIO_CONFIG_S_DRIVER_OK)) {
+        return;
+    }
+
+    /* 只针对 vhost-user 后端 */
     if (!object_dynamic_cast(OBJECT(b), TYPE_CRYPTODEV_BACKEND_VHOST_USER)) {
         return;
     }
 
-    /*
-     * 这里不直接调用 post_load（post_load 你已经改成只缓存），
-     * 而是调用你在 cryptodev-vhost-user.c 里实现的 “try_restore”。
-     *
-     * 你需要提供一个对外可见的函数，例如：
-     *   void cryptodev_vhost_user_try_restore(CryptoDevBackendVhostUser *s);
-     */
-    CryptoDevBackendVhostUser *vu = CRYPTODEV_BACKEND_VHOST_USER(b);
-
-    /* 条件要苛刻：必须 vhost 已经 started + backend ready/opened + pending */
-    if (!s->vhost_started) {
-        return;
+    if (cryptodev_vhost_user_has_pending(b)) {
+        cryptodev_vhost_user_try_restore(b);
     }
-    if (!b->ready || !vu->opened) {
-        return;
-    }
-    if (!vu->mig_restore_pending || vu->mig_blob_len == 0) {
-        return;
-    }
-
-    cryptodev_vhost_user_try_restore(vu);
 }
+
 
 static int virtio_crypto_set_status(VirtIODevice *vdev, uint8_t status)
 {
@@ -1445,11 +1433,11 @@ static void virtio_crypto_vm_state_change(void *opaque, bool running, RunState s
 
     /* We only care about resume on destination (or general resume). */
     if (running) {
-        virtio_crypto_vhost_status(s, vdev->status);
+        virtio_crypto_vhost_status(c, vdev->status);
 
         /* VM 真正 running 了，此时更可能满足 started 条件 */
         if (vdev->status & VIRTIO_CONFIG_S_DRIVER_OK) {
-            vcrypto_try_restore_after_vhost_started(s);
+            vcrypto_try_restore_after_vhost_started(c);
         }
     }
 
@@ -1537,7 +1525,7 @@ static void vcrypto_set_x_freeze(Object *obj, bool value, Error **errp)
     }
 
     /* 方案A：只支持 vhost-user crypto backend；其他 backend 直接报不支持 */
-    if (!object_dynamic_cast(OBJECT(b), QCRYPTODEV_BACKEND_TYPE_VHOST_USER)) {
+    if (!object_dynamic_cast(OBJECT(b), TYPE_CRYPTODEV_BACKEND_VHOST_USER)) {
         error_setg(errp, "x-freeze only supported for vhost-user cryptodev backend");
         return;
     }

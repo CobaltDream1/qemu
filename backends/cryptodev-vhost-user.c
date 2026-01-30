@@ -445,54 +445,49 @@ cryptodev_vhost_claim_chardev(CryptoDevBackendVhostUser *s,
     return chr;
 }
 
-static void cryptodev_vhost_user_try_restore(CryptoDevBackendVhostUser *s)
+static void cryptodev_vhost_user_try_restore_internal(CryptoDevBackendVhostUser *s)
 {
-    int sv[2] = { -1, -1 };
-    int r;
-
-    if (!s->mig_restore_pending || !s->mig_blob_len) {
+    if (!s->opened) {
         return;
     }
-    if (!s->opened) { /* 你的结构里应该有 opened */
+    if (!s->mig_restore_pending || s->mig_blob_len == 0) {
         return;
     }
 
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
-        error_report("cryptodev-vhost-user: socketpair failed: %s", strerror(errno));
+    if (cryptodev_vhost_user_send_load_state(s->mig_blob, s->mig_blob_len,
+                                            s->mig_epoch, s) < 0) {
+        error_report("cryptodev-vhost-user: deferred LOAD_STATE failed");
         return;
     }
 
-    r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
-    close(sv[1]); sv[1] = -1;
-    if (r < 0) {
-        error_report("cryptodev-vhost-user: send LOAD_STATE failed");
-        goto out;
-    }
-
-    r = vuc_write_full(sv[0], s->mig_blob, s->mig_blob_len);
-    if (r) {
-        error_report("cryptodev-vhost-user: write blob failed");
-        goto out;
-    }
-
-    r = vuc_wait_reply_chr(&s->chr);
-    if (r < 0) {
-        error_report("cryptodev-vhost-user: wait reply failed");
-        goto out;
-    }
-
-    r = cryptodev_vhost_user_thaw(CRYPTODEV_BACKEND(s));
-    if (r < 0) {
-        error_report("cryptodev-vhost-user: thaw failed");
-        goto out;
+    if (cryptodev_vhost_user_thaw(CRYPTODEV_BACKEND(s)) < 0) {
+        error_report("cryptodev-vhost-user: deferred THAW failed");
+        return;
     }
 
     s->mig_restore_pending = false;
-
-out:
-    if (sv[0] >= 0) close(sv[0]);
-    if (sv[1] >= 0) close(sv[1]);
 }
+
+bool cryptodev_vhost_user_has_pending(CryptoDevBackend *backend)
+{
+    if (!backend ||
+        !object_dynamic_cast(OBJECT(backend), TYPE_CRYPTODEV_BACKEND_VHOST_USER)) {
+        return false;
+    }
+    CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
+    return s->mig_restore_pending && s->mig_blob_len != 0;
+}
+
+void cryptodev_vhost_user_try_restore(CryptoDevBackend *backend)
+{
+    if (!backend ||
+        !object_dynamic_cast(OBJECT(backend), TYPE_CRYPTODEV_BACKEND_VHOST_USER)) {
+        return;
+    }
+    CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
+    cryptodev_vhost_user_try_restore_internal(s);
+}
+
 
 
 static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
@@ -510,7 +505,6 @@ static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
         }
         b->ready = true;
         break;
-        }
     case CHR_EVENT_CLOSED:
         b->ready = false;
         s->mig_frozen = false;   /* ✅ 断链时本地状态回到未冻结 */
