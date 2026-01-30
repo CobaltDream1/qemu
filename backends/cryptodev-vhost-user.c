@@ -504,16 +504,13 @@ static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
     assert(queues < MAX_CRYPTO_QUEUE_NUM);
 
     switch (event) {
-    case CHR_EVENT_OPENED: {
+    case CHR_EVENT_OPENED:
         if (cryptodev_vhost_user_start(queues, s) < 0) {
             exit(1);
         }
         b->ready = true;
-
-        /* ✅ start 之后再恢复 */
-        cryptodev_vhost_user_try_restore(s);
         break;
-    }
+        }
     case CHR_EVENT_CLOSED:
         b->ready = false;
         s->mig_frozen = false;   /* ✅ 断链时本地状态回到未冻结 */

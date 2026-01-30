@@ -110,6 +110,10 @@ struct VirtIOCrypto {
     Error *migr_blocker;              // 迁移阻断器
     VMChangeStateEntry *vmstate;
     bool x_frozen;
+    QEMUBH *vhost_retry_bh;
+    bool vhost_retry_scheduled;
+    uint8_t last_status;
+
 };
 
 #endif /* QEMU_VIRTIO_CRYPTO_H */

@@ -1109,7 +1109,7 @@ static void virtio_crypto_device_realize(DeviceState *dev, Error **errp)
 
     /* control queue */
     vcrypto->ctrl_vq = virtio_add_queue(vdev, 1024, virtio_crypto_handle_ctrl);
-
+    vcrypto->status = 0;
     /* device ready bit */
     if (!cryptodev_backend_is_ready(vcrypto->cryptodev)) {
         vcrypto->status &= ~VIRTIO_CRYPTO_S_HW_READY;
@@ -1191,7 +1191,10 @@ static void virtio_crypto_device_unrealize(DeviceState *dev)
 
     /* 4) 标记后端不再被占用（位置放前/后都行，我建议这里提早做） */
     cryptodev_backend_set_used(vcrypto->cryptodev, false);
-
+    /* ✅ 确保 vhost 停掉（避免残留 started 标志） */
+    vcrypto->vhost_started = 0;
+    vdev->vhost_started = 0;
+    virtio_crypto_vhost_status(vcrypto, 0);
     /* 5) 设备通用清理 */
     virtio_cleanup(vdev);
 }
@@ -1373,14 +1376,67 @@ static void virtio_crypto_vhost_status(VirtIOCrypto *c, uint8_t status)
         c->vhost_started = 0;
     }
 }
+static void vcrypto_try_restore_after_vhost_started(VirtIOCrypto *s)
+{
+    CryptoDevBackend *b = s->cryptodev;
+
+    if (!b) {
+        return;
+    }
+
+    /* 只处理 vhost-user 后端 */
+    if (!object_dynamic_cast(OBJECT(b), TYPE_CRYPTODEV_BACKEND_VHOST_USER)) {
+        return;
+    }
+
+    /*
+     * 这里不直接调用 post_load（post_load 你已经改成只缓存），
+     * 而是调用你在 cryptodev-vhost-user.c 里实现的 “try_restore”。
+     *
+     * 你需要提供一个对外可见的函数，例如：
+     *   void cryptodev_vhost_user_try_restore(CryptoDevBackendVhostUser *s);
+     */
+    CryptoDevBackendVhostUser *vu = CRYPTODEV_BACKEND_VHOST_USER(b);
+
+    /* 条件要苛刻：必须 vhost 已经 started + backend ready/opened + pending */
+    if (!s->vhost_started) {
+        return;
+    }
+    if (!b->ready || !vu->opened) {
+        return;
+    }
+    if (!vu->mig_restore_pending || vu->mig_blob_len == 0) {
+        return;
+    }
+
+    cryptodev_vhost_user_try_restore(vu);
+}
 
 static int virtio_crypto_set_status(VirtIODevice *vdev, uint8_t status)
 {
-    VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(vdev);
+    VirtIOCrypto *s = VIRTIO_CRYPTO(vdev);
 
-    virtio_crypto_vhost_status(vcrypto, status);
+    /* 记录下来，给迁移/调试用（你 VMState 里有 mstate.status 的话也更新它） */
+    s->mstate.status = status;
+
+    /* 核心：状态机驱动 vhost start/stop */
+    virtio_crypto_vhost_status(s, status);
+
+    /*
+     * 再补一枪：当 DRIVER_OK 到来时，如果 vhost 刚刚被 start，
+     * 就尝试触发一次“延迟恢复”（只会成功一次）。
+     *
+     * 注意：virtio_crypto_started() 里还有 vm_running 条件，
+     * 所以如果此时 vm 还没 running，这里可能什么也不发生，
+     * 但没关系，我们会在 vm_state_change 里再触发一次（见下面第 2 点）。
+     */
+    if (status & VIRTIO_CONFIG_S_DRIVER_OK) {
+        vcrypto_try_restore_after_vhost_started(s);
+    }
+
     return 0;
 }
+
 
 static void virtio_crypto_vm_state_change(void *opaque, bool running, RunState state)
 {
@@ -1388,8 +1444,13 @@ static void virtio_crypto_vm_state_change(void *opaque, bool running, RunState s
     VirtIODevice *vdev = VIRTIO_DEVICE(c);
 
     /* We only care about resume on destination (or general resume). */
-    if (!running) {
-        return;
+    if (running) {
+        virtio_crypto_vhost_status(s, vdev->status);
+
+        /* VM 真正 running 了，此时更可能满足 started 条件 */
+        if (vdev->status & VIRTIO_CONFIG_S_DRIVER_OK) {
+            vcrypto_try_restore_after_vhost_started(s);
+        }
     }
 
     /* Re-tick the vhost state machine after VM is really running. */
