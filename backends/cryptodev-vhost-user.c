@@ -96,19 +96,23 @@ typedef struct QEMU_PACKED VuMsgU64 {
     uint64_t u64;
 } VuMsgU64;
 
+/* 新增：发 “fd + u64 payload”，专供 LOAD 这类需要长度的消息用 */
 static int vuc_send_with_fd_u64_chr(CharBackend *chr, uint32_t req, int fd, uint64_t val)
 {
-    VuMsgU64 m = {
-        .hdr = {
-            .request = req,
-            .flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
-            .size    = sizeof(uint64_t),
-        },
-        .u64 = cpu_to_le64(val),
-    };
+    VuMsgU64 m;
+
+    memset(&m, 0, sizeof(m));
+    m.hdr.request = req;
+    m.hdr.flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK;
+    m.hdr.size    = sizeof(uint64_t);
+    m.u64         = cpu_to_le64(val);
+
     int fds[1] = { fd };
     qemu_chr_fe_set_msgfds(chr, fds, 1);
-    return (qemu_chr_fe_write_all(chr, (const uint8_t *)&m, sizeof(m)) == sizeof(m)) ? 0 : -EIO;
+
+    /* 关键：必须写 sizeof(VuMsgU64)，否则 hdr.size 再怎么设也没用 */
+    ssize_t n = qemu_chr_fe_write_all(chr, (const uint8_t *)&m, sizeof(m));
+    return (n == (ssize_t)sizeof(m)) ? 0 : -EIO;
 }
 
 /* 保留旧名字：所有旧调用点完全不用改 */
@@ -484,7 +488,7 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
         return -errno;
     }
 
-    r = vuc_send_with_fd_u64_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1], (uint64_t)len);
+    r = vuc_send_with_fd_u64_chr(&s->chr, VHOST_USER_CRYPTO_LOAD, sv[1], (uint64_t)blob_len);
     close(sv[1]);
     sv[1] = -1;
     if (r < 0) {
