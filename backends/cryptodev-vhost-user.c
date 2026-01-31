@@ -488,7 +488,7 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
         return -errno;
     }
 
-    size_t blob_len = snapshot_len; /* 用你实际 snapshot 长度变量替换 */
+    size_t blob_len = (size_t)len; /* 用你实际 snapshot 长度变量替换 */
     r = vuc_send_with_fd_u64_chr(&s->chr, VHOST_USER_CRYPTO_LOAD, sv[1], (uint64_t)blob_len);
     close(sv[1]);
     sv[1] = -1;
@@ -552,7 +552,6 @@ void cryptodev_vhost_user_try_restore(CryptoDevBackend *backend)
         !object_dynamic_cast(OBJECT(backend), TYPE_CRYPTODEV_BACKEND_VHOST_USER)) {
         return;
     }
-    CryptoDevBackendVhostUser *s = CRYPTODEV_BACKEND_VHOST_USER(backend);
     cryptodev_vhost_user_try_restore_internal(backend);  
 }
 
