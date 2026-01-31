@@ -91,19 +91,27 @@ typedef struct QEMU_PACKED VuHdr {
 } VuHdr;
 
 
-/* 无 payload / 携带 1 个 FD */
-static int vuc_send_with_fd_chr(CharBackend *chr, uint32_t req, int fd)
+typedef struct QEMU_PACKED VuMsgU64 {
+    VuHdr    hdr;
+    uint64_t u64;
+} VuMsgU64;
+
+static int vuc_send_with_fd_u64_chr(CharBackend *chr, uint32_t req, int fd, uint64_t val)
 {
-    VuHdr hdr = {
-        .request = req,
-        .flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
-        .size    = 0,
+    VuMsgU64 m = {
+        .hdr = {
+            .request = req,
+            .flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
+            .size    = sizeof(uint64_t),
+        },
+        .u64 = val, /* aarch64 little-endian下可直接传；更严谨可转成le64 */
     };
     int fds[1] = { fd };
-    qemu_chr_fe_set_msgfds(chr, fds, 1);                         // 把 FD 附在下一次 write
-    int ret = qemu_chr_fe_write_all(chr, (const uint8_t *)&hdr, sizeof(hdr));
-    return (ret == sizeof(hdr)) ? 0 : -EIO;
+    qemu_chr_fe_set_msgfds(chr, fds, 1);
+    int ret = qemu_chr_fe_write_all(chr, (const uint8_t *)&m, sizeof(m));
+    return (ret == sizeof(m)) ? 0 : -EIO;
 }
+
 /* 读取一条 vhost-user reply，并根据 u64 状态返回 0/错误 */
 static int vuc_wait_reply_chr(CharBackend *chr)
 {
@@ -464,7 +472,7 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
         return -errno;
     }
 
-    r = vuc_send_with_fd_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1]);
+    r = vuc_send_with_fd_u64_chr(&s->chr, VHOST_USER_CRYPTO_LOAD_STATE, sv[1], (uint64_t)len);
     close(sv[1]);
     sv[1] = -1;
     if (r < 0) {
