@@ -42,7 +42,7 @@
 
 #define VHOST_USER_CRYPTO_FREEZE      50
 #define VHOST_USER_CRYPTO_SAVE_STATE  51
-#define VHOST_USER_CRYPTO_LOAD_STATE  52
+#define VHOST_USER_CRYPTO_LOAD  52
 #define VHOST_USER_CRYPTO_THAW        53
 /**
  * @TYPE_CRYPTODEV_BACKEND_VHOST_USER:
@@ -488,6 +488,7 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
         return -errno;
     }
 
+    size_t blob_len = snapshot_len; /* 用你实际 snapshot 长度变量替换 */
     r = vuc_send_with_fd_u64_chr(&s->chr, VHOST_USER_CRYPTO_LOAD, sv[1], (uint64_t)blob_len);
     close(sv[1]);
     sv[1] = -1;
