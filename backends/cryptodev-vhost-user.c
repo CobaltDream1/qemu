@@ -92,7 +92,7 @@ typedef struct QEMU_PACKED VuHdr {
 
 
 typedef struct QEMU_PACKED VuMsgU64 {
-    VuHdr    hdr;
+    VuHdr hdr;
     uint64_t u64;
 } VuMsgU64;
 
@@ -104,12 +104,24 @@ static int vuc_send_with_fd_u64_chr(CharBackend *chr, uint32_t req, int fd, uint
             .flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
             .size    = sizeof(uint64_t),
         },
-        .u64 = val, /* aarch64 little-endian下可直接传；更严谨可转成le64 */
+        .u64 = cpu_to_le64(val),
     };
     int fds[1] = { fd };
     qemu_chr_fe_set_msgfds(chr, fds, 1);
-    int ret = qemu_chr_fe_write_all(chr, (const uint8_t *)&m, sizeof(m));
-    return (ret == sizeof(m)) ? 0 : -EIO;
+    return (qemu_chr_fe_write_all(chr, (const uint8_t *)&m, sizeof(m)) == sizeof(m)) ? 0 : -EIO;
+}
+
+/* 保留旧名字：所有旧调用点完全不用改 */
+static int vuc_send_with_fd_chr(CharBackend *chr, uint32_t req, int fd)
+{
+    VuHdr hdr = {
+        .request = req,
+        .flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
+        .size    = 0,
+    };
+    int fds[1] = { fd };
+    qemu_chr_fe_set_msgfds(chr, fds, 1);
+    return (qemu_chr_fe_write_all(chr, (const uint8_t *)&hdr, sizeof(hdr)) == sizeof(hdr)) ? 0 : -EIO;
 }
 
 /* 读取一条 vhost-user reply，并根据 u64 状态返回 0/错误 */
