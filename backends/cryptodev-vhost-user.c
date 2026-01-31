@@ -96,36 +96,63 @@ typedef struct QEMU_PACKED VuMsgU64 {
     uint64_t u64;
 } VuMsgU64;
 
-/* 新增：发 “fd + u64 payload”，专供 LOAD 这类需要长度的消息用 */
+static void vuc_dump_bytes(const char *tag, const void *p, size_t n)
+{
+    const uint8_t *b = p;
+    fprintf(stderr, "[vuc][%s] %zu bytes:", tag, n);
+    for (size_t i = 0; i < n; i++) {
+        fprintf(stderr, " %02x", b[i]);
+    }
+    fprintf(stderr, "\n");
+}
+
 static int vuc_send_with_fd_u64_chr(CharBackend *chr, uint32_t req, int fd, uint64_t val)
 {
     VuMsgU64 m;
-
     memset(&m, 0, sizeof(m));
-    m.hdr.request = req;
-    m.hdr.flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK;
-    m.hdr.size    = sizeof(uint64_t);
+
+    /* 协议字段必须按 LE32/LE64 编码 */
+    m.hdr.request = cpu_to_le32(req);
+    m.hdr.flags   = cpu_to_le32(VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK);
+    m.hdr.size    = cpu_to_le32((uint32_t)sizeof(uint64_t));
     m.u64         = cpu_to_le64(val);
 
+    /* 关键：确认这次 write 真的带了 FD */
     int fds[1] = { fd };
     qemu_chr_fe_set_msgfds(chr, fds, 1);
 
-    /* 关键：必须写 sizeof(VuMsgU64)，否则 hdr.size 再怎么设也没用 */
+    /* 强化 log：发出去的字段值 + 原始字节 */
+    fprintf(stderr,
+            "[vuc] SEND req=%u fd=%d hdr.size=%u u64=%" PRIu64 " (0x%" PRIx64 ")\n",
+            req, fd, (unsigned)sizeof(uint64_t), val, val);
+    vuc_dump_bytes("send_u64_hdr+payload", &m, sizeof(m));
+
     ssize_t n = qemu_chr_fe_write_all(chr, (const uint8_t *)&m, sizeof(m));
-    return (n == (ssize_t)sizeof(m)) ? 0 : -EIO;
+    if (n != (ssize_t)sizeof(m)) {
+        fprintf(stderr, "[vuc] SEND failed: wrote=%zd expect=%zu\n", n, sizeof(m));
+        return -EIO;
+    }
+    return 0;
 }
+
 
 /* 保留旧名字：所有旧调用点完全不用改 */
 static int vuc_send_with_fd_chr(CharBackend *chr, uint32_t req, int fd)
 {
-    VuHdr hdr = {
-        .request = req,
-        .flags   = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
-        .size    = 0,
-    };
+    VuHdr hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.request = cpu_to_le32(req);
+    hdr.flags   = cpu_to_le32(VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK);
+    hdr.size    = cpu_to_le32(0);
+
     int fds[1] = { fd };
     qemu_chr_fe_set_msgfds(chr, fds, 1);
-    return (qemu_chr_fe_write_all(chr, (const uint8_t *)&hdr, sizeof(hdr)) == sizeof(hdr)) ? 0 : -EIO;
+
+    fprintf(stderr, "[vuc] SEND req=%u fd=%d hdr.size=0\n", req, fd);
+    vuc_dump_bytes("send_hdr_only", &hdr, sizeof(hdr));
+
+    ssize_t n = qemu_chr_fe_write_all(chr, (const uint8_t *)&hdr, sizeof(hdr));
+    return (n == (ssize_t)sizeof(hdr)) ? 0 : -EIO;
 }
 
 /* 读取一条 vhost-user reply，并根据 u64 状态返回 0/错误 */
