@@ -96,6 +96,15 @@ typedef struct QEMU_PACKED VuMsgU64 {
     uint64_t u64;
 } VuMsgU64;
 
+static inline uint64_t qvc_ts_ms(void)
+{
+    return qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+}
+
+#define QVC_MIG_LOG(fmt, ...) \
+    fprintf(stderr, "[QVC][%llu ms] " fmt "\n", \
+            (unsigned long long)qvc_ts_ms(), ##__VA_ARGS__)
+
 static void vuc_dump_bytes(const char *tag, const void *p, size_t n)
 {
     const uint8_t *b = p;
@@ -270,12 +279,14 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
     *blob  = NULL;
     *len   = 0;
     *epoch = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+    QVC_MIG_LOG("SRC_PRESAVE_BEGIN");
 
     /* 0) FREEZE (only once): drain inflight before exporting state */
     r = cryptodev_vhost_user_freeze(backend);
     if (r < 0) {
         return r;
     }
+    QVC_MIG_LOG("SRC_PRESAVE_FREEZE_OK");
 
     /* 1) 建立 socketpair，sv[1] 传给后端，sv[0] 自己读 */
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
@@ -355,7 +366,7 @@ static int cryptodev_vhost_user_pre_save(CryptoDevBackend *backend,
         *len  = 0;
         goto out;
     }
-
+    QVC_MIG_LOG("SRC_PRESAVE_DONE len=%u", *len);
     r = 0;
 
 out:
@@ -388,6 +399,7 @@ static int cryptodev_vhost_user_post_load(CryptoDevBackend *backend,
         s->mig_blob_len = len;
         s->mig_epoch = epoch;
         s->mig_restore_pending = true;
+        QVC_MIG_LOG("DST_POST_LOAD_CACHED len=%u epoch=%" PRIu64, len, epoch);
     } else {
         s->mig_epoch = epoch;
         s->mig_restore_pending = false;
@@ -510,6 +522,8 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
     if (len > (64u << 20)) {
         return -EINVAL;
     }
+    uint64_t t_restore_begin = qvc_ts_ms();
+    QVC_MIG_LOG("DST_RESTORE_BEGIN len=%u epoch=%" PRIu64, len, epoch);
 
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
         return -errno;
@@ -517,6 +531,7 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
 
     size_t blob_len = (size_t)len; /* 用你实际 snapshot 长度变量替换 */
     r = vuc_send_with_fd_u64_chr(&s->chr, VHOST_USER_CRYPTO_LOAD, sv[1], (uint64_t)blob_len);
+    QVC_MIG_LOG("DST_RESTORE_LOAD_SENT len=%zu", blob_len);
     close(sv[1]);
     sv[1] = -1;
     if (r < 0) {
@@ -524,12 +539,14 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
     }
 
     r = vuc_write_full(sv[0], blob, len);
+    QVC_MIG_LOG("DST_RESTORE_BLOB_WRITTEN len=%u", len);
     if (r) {
         r = -EIO;
         goto out;
     }
 
     r = vuc_wait_reply_chr(&s->chr);
+    QVC_MIG_LOG("DST_RESTORE_BACKEND_ACK");
     if (r < 0) {
         goto out;
     }
@@ -538,6 +555,11 @@ static int cryptodev_vhost_user_do_restore(CryptoDevBackend *backend,
     if (r < 0) {
         goto out;
     }
+    QVC_MIG_LOG("DST_RESTORE_THAW_OK");
+
+
+    QVC_MIG_LOG("DST_RESTORE_DONE cost_ms=%" PRIu64,
+            qvc_ts_ms() - t_restore_begin);
 
     r = 0;
 
@@ -555,9 +577,12 @@ static void cryptodev_vhost_user_try_restore_internal(CryptoDevBackend *backend)
         return;
     }
     if (!s->opened || !backend->ready) {
+        QVC_MIG_LOG("DST_RESTORE_WAIT opened=%d ready=%d pending=%d len=%u",
+                    s->opened, backend->ready,
+                    s->mig_restore_pending, s->mig_blob_len);
         return;
     }
-
+    QVC_MIG_LOG("DST_RESTORE_TRIGGER");
     if (cryptodev_vhost_user_do_restore(backend, s->mig_blob, s->mig_blob_len, s->mig_epoch) == 0) {
         s->mig_restore_pending = false;
     }
